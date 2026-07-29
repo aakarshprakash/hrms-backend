@@ -23,7 +23,11 @@ class AiInsightsController extends Controller
         $today = Carbon::today();
         $monthStart = $today->copy()->startOfMonth();
 
-        $scope = fn ($q) => $branchId ? $q->where('branch_id', $branchId) : $q;
+        // Qualified with the table name (not just 'branch_id') because this
+        // scope also gets applied to queries joined with other
+        // branch_id-having tables (e.g. departments in $byDepartment below),
+        // where an unqualified column reference is ambiguous to MySQL.
+        $scope = fn ($q) => $branchId ? $q->where('employees.branch_id', $branchId) : $q;
         $empScope = fn ($q) => $branchId
             ? $q->whereHas('employee', fn ($e) => $e->where('branch_id', $branchId))
             : $q;
