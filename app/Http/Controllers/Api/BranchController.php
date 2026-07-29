@@ -37,8 +37,11 @@ class BranchController extends Controller
             'company_id'    => ['nullable', 'integer', 'exists:companies,id'],
         ]);
 
-        // Default to company 1 if not specified
-        $validated['company_id'] = $validated['company_id'] ?? Company::first()?->id ?? 1;
+        // Default to the first company, creating one if this is a fresh
+        // install with none yet, rather than assuming id 1 exists.
+        $validated['company_id'] = $validated['company_id']
+            ?? Company::first()?->id
+            ?? Company::create(['name' => 'My Company'])->id;
 
         $branch = Branch::create($validated);
 
@@ -98,7 +101,12 @@ class BranchController extends Controller
                 'name'     => ['required', 'string', 'max:191'],
                 'timezone' => ['nullable', 'string', 'max:100'],
             ]);
-            $company->update($validated);
+
+            // No company exists yet on a fresh install -- create the first
+            // one from this same form instead of assuming one is already there.
+            $company = $company
+                ? tap($company)->update($validated)
+                : Company::create($validated);
         }
 
         return response()->json(['data' => $company]);
