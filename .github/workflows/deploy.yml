@@ -24,8 +24,43 @@ jobs:
             -o KexAlgorithms=+diffie-hellman-group-exchange-sha256 \
             aakai5l8@162.241.85.117 << 'EOF'
 
-          cd /home1/aakai5l8/repositories/hrms-backend
+          set -e
 
+          REPO=/home1/aakai5l8/repositories/hrms-backend
+          DEPLOY=/home1/aakai5l8/peoplenex.online
+
+          cd $REPO
+
+          echo "Updating repository..."
           git pull origin main
+
+          echo "Syncing files..."
+          rsync -av --delete \
+            --exclude=".git" \
+            --exclude=".github" \
+            --exclude=".env" \
+            --exclude="storage/logs/*" \
+            ./ $DEPLOY/
+
+          cd $DEPLOY
+
+          echo "Installing Composer packages..."
+          composer install \
+            --no-dev \
+            --prefer-dist \
+            --optimize-autoloader \
+            --no-interaction
+
+          echo "Running migrations..."
+          php artisan migrate --force
+
+          echo "Optimizing Laravel..."
+          php artisan optimize:clear
+          php artisan optimize
+
+          echo "Setting permissions..."
+          chmod -R 775 storage bootstrap/cache
+
+          echo "Deployment completed successfully."
 
           EOF
