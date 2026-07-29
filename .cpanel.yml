@@ -1,26 +1,14 @@
+---
 deployment:
   tasks:
     - export DEPLOYPATH=/home1/aakai5l8/peoplenex.online
 
-    # Copy project files
-    - /bin/cp -R app $DEPLOYPATH
-    - /bin/cp -R bootstrap $DEPLOYPATH
-    - /bin/cp -R config $DEPLOYPATH
-    - /bin/cp -R database $DEPLOYPATH
-    - /bin/cp -R public/* $DEPLOYPATH
-    - /bin/cp -R resources $DEPLOYPATH
-    - /bin/cp -R routes $DEPLOYPATH
-    - /bin/cp -R storage $DEPLOYPATH
+    # Sync repository to deployment directory
+    - /usr/bin/rsync -av --delete --exclude=".git" ./ $DEPLOYPATH/
 
-    - /bin/cp artisan $DEPLOYPATH
-    - /bin/cp composer.json $DEPLOYPATH
-    - /bin/cp composer.lock $DEPLOYPATH
-
-    # Install dependencies
+    # Laravel
     - cd $DEPLOYPATH
     - composer install --no-dev --prefer-dist --optimize-autoloader
-
-    # Laravel optimization
     - php artisan migrate --force
     - php artisan optimize:clear
     - php artisan optimize
