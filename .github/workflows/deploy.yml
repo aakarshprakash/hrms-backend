@@ -1,11 +1,31 @@
-- name: Deploy over SSH
-  uses: appleboy/ssh-action@v1.2.2
-  with:
-    host: ${{ secrets.HOST }}
-    username: ${{ secrets.USERNAME }}
-    key: ${{ secrets.SSH_KEY }}
-    port: ${{ secrets.PORT }}
-    use_insecure_cipher: true
-    script: |
-      cd /home1/aakai5l8/repositories/hrms-backend
-      git pull origin main
+name: Deploy Laravel
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 162.241.85.117 >> ~/.ssh/known_hosts
+
+      - name: Deploy
+        run: |
+          ssh \
+            -o HostKeyAlgorithms=+ssh-rsa \
+            -o KexAlgorithms=+diffie-hellman-group-exchange-sha256 \
+            aakai5l8@162.241.85.117 << 'EOF'
+
+          cd /home1/aakai5l8/repositories/hrms-backend
+
+          git pull origin main
+
+          EOF
