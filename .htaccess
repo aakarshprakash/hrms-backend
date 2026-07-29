@@ -1,0 +1,33 @@
+# This shared-hosting account's document root for peoplenex.online points
+# at this app root instead of public/ (changing it requires cPanel access
+# we don't have a clean path to yet). This transparently forwards every
+# request into public/ so URLs stay clean (peoplenex.online/api/... instead
+# of peoplenex.online/public/api/...), while public/index.php's own routing
+# takes over from there. If the document root is ever corrected to point at
+# public/ directly, this file becomes unnecessary and can be deleted.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Already resolves to a real file/folder under public/ -- serve it as-is.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{DOCUMENT_ROOT}/public%{REQUEST_URI} -f [OR]
+    RewriteCond %{DOCUMENT_ROOT}/public%{REQUEST_URI} -d
+    RewriteRule ^(.*)$ public/$1 [L]
+
+    # Everything else (application routes) goes through public/index.php.
+    RewriteCond %{REQUEST_URI} !^/public/
+    RewriteRule ^(.*)$ public/index.php [L]
+</IfModule>
+
+# Defense in depth: even though every request above resolves into public/,
+# explicitly block direct access to sensitive files at the root in case
+# this .htaccess is ever bypassed, disabled, or misconfigured.
+<FilesMatch "^\.env|composer\.(json|lock)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
