@@ -16,3 +16,12 @@ Schedule::command('hrms:accrue-leave-balances')->monthlyOn(1, '00:00');
 // Requires the Laravel scheduler to actually be running (e.g. `php artisan
 // schedule:work`, or a cron/Task Scheduler entry for `schedule:run` every minute).
 Schedule::command('biometric:sync')->hourly();
+
+// Turn "no punch" into a real absent record. Hourly (not once-daily)
+// because the command itself decides -- per branch, in that branch's own
+// timezone -- whether "yesterday" has actually elapsed; a single fixed
+// server-clock time can't safely cover branches in different timezones.
+// Idempotent (skips anything already marked), so re-running hourly is
+// harmless. Offset 20 minutes past biometric:sync's hourly tick so real
+// punch data always gets first chance to land for that hour.
+Schedule::command('attendance:mark-absentees')->hourlyAt(20);

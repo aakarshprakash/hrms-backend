@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\Holiday;
 use App\Models\Leave;
@@ -24,6 +25,7 @@ class LeaveController extends Controller
             'start_date' => 'required|date',
             'end_date' => 'required|date|after_or_equal:start_date',
             'reason' => 'nullable|string',
+            'source_attendance_id' => 'nullable|integer|exists:attendances,id',
         ]);
 
         $employee = Employee::withoutGlobalScopes()
@@ -32,6 +34,25 @@ class LeaveController extends Controller
 
         if (!$employee) {
             return response()->json(['message' => 'No employee profile found for this user.'], 422);
+        }
+
+        if (!empty($validated['source_attendance_id'])) {
+            $sourceAttendance = Attendance::find($validated['source_attendance_id']);
+
+            if (!$sourceAttendance || $sourceAttendance->employee_id !== $employee->id) {
+                return response()->json(['message' => 'This attendance record does not belong to you.'], 403);
+            }
+            if ($sourceAttendance->status !== 'absent') {
+                return response()->json(['message' => 'Only a day marked Absent can be converted to leave.'], 422);
+            }
+            if (Leave::where('source_attendance_id', $sourceAttendance->id)->whereIn('status', ['pending', 'approved'])->exists()) {
+                return response()->json(['message' => 'A leave request already exists for this day.'], 422);
+            }
+
+            // This request type means "convert this one specific day" --
+            // ignore whatever start/end date the client sent and force it
+            // server-side to the source day.
+            $validated['start_date'] = $validated['end_date'] = $sourceAttendance->date->toDateString();
         }
 
         $branchId = $employee->branch_id;
@@ -76,6 +97,7 @@ class LeaveController extends Controller
         $leave = Leave::create([
             'employee_id' => $employee->id,
             'leave_type_id' => $validated['leave_type_id'],
+            'source_attendance_id' => $validated['source_attendance_id'] ?? null,
             'start_date' => $validated['start_date'],
             'end_date' => $validated['end_date'],
             'days' => $days,

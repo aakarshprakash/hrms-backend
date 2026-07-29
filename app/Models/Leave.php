@@ -12,6 +12,7 @@ class Leave extends Model
     protected $fillable = [
         'employee_id',
         'leave_type_id',
+        'source_attendance_id',
         'start_date',
         'end_date',
         'days',
@@ -36,6 +37,11 @@ class Leave extends Model
     public function leaveType()
     {
         return $this->belongsTo(LeaveType::class);
+    }
+
+    public function sourceAttendance()
+    {
+        return $this->belongsTo(Attendance::class, 'source_attendance_id');
     }
 
     public function approvalActions()
@@ -63,6 +69,10 @@ class Leave extends Model
         if ($balance) {
             $balance->increment('used', $this->days);
             $balance->decrement('balance', $this->days);
+        }
+
+        if ($this->source_attendance_id) {
+            $this->sourceAttendance?->update(['status' => 'on_leave']);
         }
     }
 

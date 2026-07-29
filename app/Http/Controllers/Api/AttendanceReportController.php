@@ -207,7 +207,7 @@ class AttendanceReportController extends Controller
             ->get()
             ->groupBy('employee_id');
 
-        $statusCode = ['present' => 'P', 'late' => 'P', 'half_day' => 'HD', 'absent' => 'A'];
+        $statusCode = ['present' => 'P', 'late' => 'P', 'half_day' => 'HD', 'absent' => 'A', 'on_leave' => 'L'];
 
         $rows = $employees->map(function ($emp) use ($days, $monthStart, $attendanceByEmployeeDay, $holidayDates, $leavesByEmployee, $statusCode, $today, $year, $month) {
             $cells = [];

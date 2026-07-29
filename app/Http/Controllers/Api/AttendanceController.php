@@ -99,7 +99,7 @@ class AttendanceController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = Attendance::with('employee');
+        $query = Attendance::with(['employee', 'leaveConversion.leaveType']);
 
         if ($request->filled('employee_id')) {
             $query->where('employee_id', $request->integer('employee_id'));
@@ -243,7 +243,7 @@ class AttendanceController extends Controller
         $validated = $request->validate([
             'employee_id' => ['required', 'integer', 'exists:employees,id'],
             'date' => ['required', 'date'],
-            'status' => ['required', 'in:present,absent,half_day,late'],
+            'status' => ['required', 'in:present,absent,half_day,late,on_leave'],
             'check_in' => ['nullable', 'date_format:H:i'],
             'check_out' => ['nullable', 'date_format:H:i'],
         ]);

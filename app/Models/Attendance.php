@@ -47,4 +47,9 @@ class Attendance extends Model
     {
         return $this->hasMany(AttendanceRegularization::class);
     }
+
+    public function leaveConversion()
+    {
+        return $this->hasOne(Leave::class, 'source_attendance_id');
+    }
 }
