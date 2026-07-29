@@ -39,9 +39,13 @@ class BranchController extends Controller
 
         // Default to the first company, creating one if this is a fresh
         // install with none yet, rather than assuming id 1 exists.
-        $validated['company_id'] = $validated['company_id']
-            ?? Company::first()?->id
-            ?? Company::create(['name' => 'My Company'])->id;
+        $company = Company::find($validated['company_id'] ?? null) ?? Company::first();
+        $validated['company_id'] = $company?->id ?? Company::create(['name' => 'My Company'])->id;
+
+        // timezone/currency_code are NOT NULL columns; an empty form field
+        // becomes null via ConvertEmptyStringsToNull, so fall back explicitly.
+        $validated['timezone'] = $validated['timezone'] ?? $company?->timezone ?? 'UTC';
+        $validated['currency_code'] = $validated['currency_code'] ?? 'USD';
 
         $branch = Branch::create($validated);
 
@@ -69,6 +73,16 @@ class BranchController extends Controller
             'timezone'      => ['nullable', 'string', 'max:100'],
             'currency_code' => ['nullable', 'string', 'max:10'],
         ]);
+
+        // timezone/currency_code are NOT NULL columns; an empty form field
+        // becomes null via ConvertEmptyStringsToNull. Rather than a fallback
+        // constant here, just leave the branch's existing value untouched.
+        if (($validated['timezone'] ?? null) === null) {
+            unset($validated['timezone']);
+        }
+        if (($validated['currency_code'] ?? null) === null) {
+            unset($validated['currency_code']);
+        }
 
         $branch->update($validated);
 
@@ -101,6 +115,10 @@ class BranchController extends Controller
                 'name'     => ['required', 'string', 'max:191'],
                 'timezone' => ['nullable', 'string', 'max:100'],
             ]);
+
+            // companies.timezone is NOT NULL; an empty form field becomes
+            // null via ConvertEmptyStringsToNull, so fall back explicitly.
+            $validated['timezone'] = $validated['timezone'] ?? $company?->timezone ?? 'UTC';
 
             // No company exists yet on a fresh install -- create the first
             // one from this same form instead of assuming one is already there.
