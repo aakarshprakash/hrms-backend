@@ -12,6 +12,18 @@ class UpdateEmployeeRequest extends FormRequest
         return true;
     }
 
+    protected function prepareForValidation(): void
+    {
+        // An employee with a genuinely empty last name (single-name staff,
+        // common for records without a full legal name on file) round-trips
+        // through the edit form as an empty string, which
+        // ConvertEmptyStringsToNull turns into null -- failing the "string"
+        // rule below even though nothing actually changed. Restore it.
+        if ($this->has('last_name') && $this->input('last_name') === null) {
+            $this->merge(['last_name' => '']);
+        }
+    }
+
     public function rules(): array
     {
         return [
