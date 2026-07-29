@@ -12,7 +12,10 @@ use Spatie\Permission\Models\Role;
  * RolePermissionSeeder/CompanyBranchSeeder (dev fixtures with fake company
  * data), this only creates the roles/permissions and a single real
  * super_admin account. That account logs in and uses Quick Setup to create
- * the actual company/branch data interactively. Safe to re-run.
+ * the actual company/branch data interactively. Safe to re-run, including
+ * automatically on every deploy: the admin account is only ever created
+ * once via firstOrCreate, never updated, so a password changed after first
+ * login is never silently reset back to the bootstrap default.
  */
 class ProductionSeeder extends Seeder
 {
@@ -24,7 +27,7 @@ class ProductionSeeder extends Seeder
 
         $this->call(PermissionCatalogSeeder::class);
 
-        $admin = User::updateOrCreate(
+        $admin = User::firstOrCreate(
             ['email' => 'admin@peoplenex.online'],
             [
                 'name' => 'Super Admin',
@@ -36,6 +39,8 @@ class ProductionSeeder extends Seeder
 
         $admin->syncRoles(['super_admin']);
 
-        $this->command->warn('Change the admin@peoplenex.online password immediately after first login -- admin123 is a bootstrap default, not a real credential.');
+        if ($admin->wasRecentlyCreated) {
+            $this->command->warn('Change the admin@peoplenex.online password immediately after first login -- admin123 is a bootstrap default, not a real credential.');
+        }
     }
 }

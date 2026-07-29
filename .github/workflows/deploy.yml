@@ -54,6 +54,7 @@ jobs:
           echo "===== Running Laravel Commands ====="
 
           /usr/local/bin/php artisan migrate --force
+          /usr/local/bin/php artisan db:seed --class=ProductionSeeder --force
           /usr/local/bin/php artisan optimize:clear
           /usr/local/bin/php artisan optimize
 
