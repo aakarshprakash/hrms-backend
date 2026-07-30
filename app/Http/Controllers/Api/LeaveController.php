@@ -67,11 +67,13 @@ class LeaveController extends Controller
             ->map(fn ($d) => $d->format('Y-m-d'))
             ->toArray();
 
-        // Calculate working days (exclude weekends and holidays)
+        // Calculate working days (exclude week-off days and holidays)
+        $branch = $employee->branch;
         $period = CarbonPeriod::create($startDate, $endDate);
         $days = 0;
         foreach ($period as $date) {
-            if ($date->isSaturday() || $date->isSunday()) {
+            $isWorkingDay = $branch ? $branch->isWorkingDay($date) : !$date->isWeekend();
+            if (!$isWorkingDay) {
                 continue;
             }
             if (in_array($date->format('Y-m-d'), $holidayDates)) {

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Branch;
 use App\Models\Employee;
 use App\Models\Holiday;
 use App\Models\Leave;
@@ -45,12 +46,17 @@ class CalendarController extends Controller
             ->with('employee:id,first_name,last_name')
             ->get();
 
+        // Display-only: resolve the branch's work-week pattern when a single
+        // branch is selected; an all-branches view has no single pattern to
+        // resolve, so it falls back to the classic Sat+Sun highlighting.
+        $branch = $branchId ? Branch::find($branchId) : null;
+
         $days = [];
         for ($d = $monthStart->copy(); $d->lte($monthEnd); $d->addDay()) {
             $key = $d->toDateString();
             $days[$key] = [
                 'date' => $key,
-                'is_weekend' => $d->isWeekend(),
+                'is_weekend' => $branch ? !$branch->isWorkingDay($d) : $d->isWeekend(),
                 'holidays' => [],
                 'birthdays' => [],
                 'anniversaries' => [],

@@ -126,6 +126,13 @@
                     <td class="amount">{{ number_format($ded['amount'], 2) }}</td>
                 </tr>
                 @endforeach
+                @php $lop = $payslip->breakdown_json['lop'] ?? null; @endphp
+                @if($lop && ($lop['amount'] ?? 0) > 0)
+                <tr>
+                    <td>Loss of Pay ({{ rtrim(rtrim(number_format($lop['days'], 1), '0'), '.') }} day{{ $lop['days'] == 1 ? '' : 's' }})</td>
+                    <td class="amount">{{ number_format($lop['amount'], 2) }}</td>
+                </tr>
+                @endif
                 <tr style="background-color:#f8cecc; font-weight:bold;">
                     <td>Total Deductions</td>
                     <td class="amount">{{ number_format($payslip->total_deductions, 2) }}</td>

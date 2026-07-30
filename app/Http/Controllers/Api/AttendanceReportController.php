@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Attendance;
+use App\Models\Branch;
 use App\Models\Employee;
 use App\Models\Holiday;
 use App\Models\Leave;
@@ -208,8 +209,9 @@ class AttendanceReportController extends Controller
             ->groupBy('employee_id');
 
         $statusCode = ['present' => 'P', 'late' => 'P', 'half_day' => 'HD', 'absent' => 'A', 'on_leave' => 'L'];
+        $branch = Branch::find($validated['branch_id']);
 
-        $rows = $employees->map(function ($emp) use ($days, $monthStart, $attendanceByEmployeeDay, $holidayDates, $leavesByEmployee, $statusCode, $today, $year, $month) {
+        $rows = $employees->map(function ($emp) use ($days, $monthStart, $attendanceByEmployeeDay, $holidayDates, $leavesByEmployee, $statusCode, $today, $year, $month, $branch) {
             $cells = [];
             foreach ($days as $day) {
                 $date = Carbon::create($year, $month, $day);
@@ -224,7 +226,7 @@ class AttendanceReportController extends Controller
 
                 if ($holidayDates->has($dateKey)) {
                     $cells[$day] = ['code' => 'H', 'late' => false];
-                } elseif ($date->isWeekend()) {
+                } elseif ($branch && !$branch->isWorkingDay($date)) {
                     $cells[$day] = ['code' => 'W', 'late' => false];
                 } elseif (($leavesByEmployee->get($emp->id) ?? collect())->contains(fn ($l) => $dateKey >= $l->start_date->toDateString() && $dateKey <= $l->end_date->toDateString())) {
                     $cells[$day] = ['code' => 'L', 'late' => false];

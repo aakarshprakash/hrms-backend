@@ -28,13 +28,16 @@ class BranchController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'name'          => ['required', 'string', 'max:191'],
-            'address'       => ['nullable', 'string', 'max:500'],
-            'city'          => ['nullable', 'string', 'max:191'],
-            'country'       => ['nullable', 'string', 'max:191'],
-            'timezone'      => ['nullable', 'string', 'max:100'],
-            'currency_code' => ['nullable', 'string', 'max:10'],
-            'company_id'    => ['nullable', 'integer', 'exists:companies,id'],
+            'name'                   => ['required', 'string', 'max:191'],
+            'address'                => ['nullable', 'string', 'max:500'],
+            'city'                   => ['nullable', 'string', 'max:191'],
+            'country'                => ['nullable', 'string', 'max:191'],
+            'timezone'               => ['nullable', 'string', 'max:100'],
+            'currency_code'          => ['nullable', 'string', 'max:10'],
+            'company_id'             => ['nullable', 'integer', 'exists:companies,id'],
+            'payroll_days_in_month'  => ['nullable', 'integer', 'min:1', 'max:31'],
+            'week_off_days'          => ['nullable', 'array'],
+            'week_off_days.*'        => ['integer', 'min:0', 'max:6'],
         ]);
 
         // Default to the first company, creating one if this is a fresh
@@ -46,6 +49,8 @@ class BranchController extends Controller
         // becomes null via ConvertEmptyStringsToNull, so fall back explicitly.
         $validated['timezone'] = $validated['timezone'] ?? $company?->timezone ?? 'UTC';
         $validated['currency_code'] = $validated['currency_code'] ?? 'USD';
+        $validated['payroll_days_in_month'] = $validated['payroll_days_in_month'] ?? 30;
+        $validated['week_off_days'] = $validated['week_off_days'] ?? [0, 6];
 
         $branch = Branch::create($validated);
 
@@ -66,12 +71,15 @@ class BranchController extends Controller
     public function update(Request $request, Branch $branch): JsonResponse
     {
         $validated = $request->validate([
-            'name'          => ['sometimes', 'string', 'max:191'],
-            'address'       => ['nullable', 'string', 'max:500'],
-            'city'          => ['nullable', 'string', 'max:191'],
-            'country'       => ['nullable', 'string', 'max:191'],
-            'timezone'      => ['nullable', 'string', 'max:100'],
-            'currency_code' => ['nullable', 'string', 'max:10'],
+            'name'                   => ['sometimes', 'string', 'max:191'],
+            'address'                => ['nullable', 'string', 'max:500'],
+            'city'                   => ['nullable', 'string', 'max:191'],
+            'country'                => ['nullable', 'string', 'max:191'],
+            'timezone'               => ['nullable', 'string', 'max:100'],
+            'currency_code'          => ['nullable', 'string', 'max:10'],
+            'payroll_days_in_month'  => ['nullable', 'integer', 'min:1', 'max:31'],
+            'week_off_days'          => ['nullable', 'array'],
+            'week_off_days.*'        => ['integer', 'min:0', 'max:6'],
         ]);
 
         // timezone/currency_code are NOT NULL columns; an empty form field
@@ -82,6 +90,12 @@ class BranchController extends Controller
         }
         if (($validated['currency_code'] ?? null) === null) {
             unset($validated['currency_code']);
+        }
+        if (($validated['payroll_days_in_month'] ?? null) === null) {
+            unset($validated['payroll_days_in_month']);
+        }
+        if (($validated['week_off_days'] ?? null) === null) {
+            unset($validated['week_off_days']);
         }
 
         $branch->update($validated);

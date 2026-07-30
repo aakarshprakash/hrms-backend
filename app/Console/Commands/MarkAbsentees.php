@@ -78,7 +78,7 @@ class MarkAbsentees extends Command
 
     private function processBranchDate(Branch $branch, Carbon $date, AttendanceStatusResolver $resolver): int
     {
-        if ($date->isWeekend()) {
+        if (!$branch->isWorkingDay($date)) {
             return 0;
         }
 

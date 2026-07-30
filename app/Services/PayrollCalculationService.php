@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Models\Attendance;
 use App\Models\Employee;
+use App\Models\Leave;
 use App\Models\OvertimeRequest;
 use App\Models\OvertimeRule;
 use App\Models\PayrollRun;
@@ -10,6 +12,7 @@ use App\Models\PayrollRunAdjustment;
 use App\Models\SalaryStructure;
 use App\Models\StatutoryRule;
 use Carbon\Carbon;
+use Carbon\CarbonPeriod;
 
 class PayrollCalculationService
 {
@@ -71,6 +74,11 @@ class PayrollCalculationService
                 'amount' => round($amount, 2),
             ];
         }
+
+        // LOP is calculated against total fixed gross from the structure
+        // alone -- one-off adjustments (e.g. a sales incentive) aren't meant
+        // to be prorated by attendance, so this is captured before step 4.5.
+        $structureGrossForLop = $gross;
 
         // 3. OT pay for the month
         $otPay = 0.0;
@@ -134,6 +142,44 @@ class PayrollCalculationService
             }
         }
 
+        // 4.6 Loss of pay: full Absent days count as 1.0, Half Day as 0.5.
+        // Approved leave against an unpaid LeaveType also counts -- a paid
+        // LeaveType fully protects that day's pay, so it contributes 0.
+        // on_leave-status Attendance rows are deliberately not queried here
+        // separately: every on_leave row belongs to either a paid LeaveType
+        // (contributes 0, correctly excluded) or an unpaid one (already
+        // counted via the Leave query below), so counting both would
+        // double-count the same day.
+        $branch = $employee->branch;
+        $payrollDays = $branch?->payroll_days_in_month ?: 30;
+        $perDayRate = $payrollDays > 0 ? ($structureGrossForLop / $payrollDays) : 0.0;
+
+        $lopDays = (float) Attendance::withoutGlobalScopes()
+            ->where('employee_id', $employee->id)
+            ->whereBetween('date', [$monthStart->toDateString(), $monthEnd->toDateString()])
+            ->whereIn('status', ['absent', 'half_day'])
+            ->get()
+            ->sum(fn ($a) => $a->status === 'absent' ? 1.0 : 0.5);
+
+        $unpaidLeaves = Leave::where('employee_id', $employee->id)
+            ->where('status', 'approved')
+            ->whereHas('leaveType', fn ($q) => $q->where('paid', false))
+            ->where('start_date', '<=', $monthEnd)
+            ->where('end_date', '>=', $monthStart)
+            ->get();
+
+        foreach ($unpaidLeaves as $leave) {
+            $overlapStart = $leave->start_date->max($monthStart);
+            $overlapEnd = $leave->end_date->min($monthEnd);
+            foreach (CarbonPeriod::create($overlapStart, $overlapEnd) as $d) {
+                if ($branch && $branch->isWorkingDay($d)) {
+                    $lopDays += 1.0;
+                }
+            }
+        }
+
+        $lopAmount = round($perDayRate * $lopDays, 2);
+
         // 5. Statutory deductions from statutory_rules
         $statutoryRules = StatutoryRule::withoutGlobalScopes()
             ->where('branch_id', $employee->branch_id)
@@ -153,7 +199,7 @@ class PayrollCalculationService
             }
         }
 
-        $totalDeductions = round($structureDeductions + $statutoryTotal, 2);
+        $totalDeductions = round($structureDeductions + $statutoryTotal + $lopAmount, 2);
         $netPay = round($gross + $otPay - $totalDeductions, 2);
 
         $breakdownJson = [
@@ -162,6 +208,7 @@ class PayrollCalculationService
             'deductions' => $structureDeductionsBreakdown,
             'statutory_deductions' => $statutoryBreakdown,
             'adjustments' => $adjustmentsBreakdown,
+            'lop' => ['days' => $lopDays, 'per_day_rate' => round($perDayRate, 2), 'amount' => $lopAmount],
         ];
 
         return [
