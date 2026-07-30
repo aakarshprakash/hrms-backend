@@ -7,6 +7,7 @@ use App\Jobs\PayrollRunJob;
 use App\Models\Employee;
 use App\Models\PayrollRun;
 use App\Models\Payslip;
+use App\Services\PayrollCalculationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -122,6 +123,55 @@ class PayrollRunController extends Controller
         }
 
         return response()->json(['message' => 'Payroll run completed.', 'data' => $run->fresh()]);
+    }
+
+    /**
+     * Live, read-only preview of what "Run Payroll" would generate -- lets
+     * HR catch mistakes (missing salary structure, unexpected LOP days,
+     * etc.) before payslips are actually created. Nothing here is persisted;
+     * it re-runs the exact same calculation PayrollRunJob uses.
+     */
+    public function preview(PayrollRun $run, PayrollCalculationService $calculationService): JsonResponse
+    {
+        $this->assertCanManage($run);
+
+        abort_unless($run->status === 'draft', 422, 'Only a draft payroll run can be previewed.');
+
+        $employees = Employee::withoutGlobalScopes()
+            ->where('branch_id', $run->branch_id)
+            ->where('status', 'active')
+            ->with('department:id,name')
+            ->orderBy('first_name')
+            ->get();
+
+        $rows = $employees->map(function ($employee) use ($calculationService, $run) {
+            $result = $calculationService->computeForEmployee($employee, $run);
+
+            return [
+                'employee' => [
+                    'id' => $employee->id,
+                    'employee_code' => $employee->employee_code,
+                    'name' => trim("{$employee->first_name} {$employee->last_name}"),
+                    'department' => $employee->department?->name,
+                ],
+                'gross_pay' => $result['gross_pay'],
+                'total_deductions' => $result['total_deductions'],
+                'net_pay' => $result['net_pay'],
+                'breakdown_json' => $result['breakdown_json'],
+            ];
+        })->values();
+
+        return response()->json([
+            'data' => [
+                'rows' => $rows,
+                'totals' => [
+                    'employee_count' => $rows->count(),
+                    'total_gross' => round($rows->sum('gross_pay'), 2),
+                    'total_deductions' => round($rows->sum('total_deductions'), 2),
+                    'total_net' => round($rows->sum('net_pay'), 2),
+                ],
+            ],
+        ]);
     }
 
     public function status(PayrollRun $run): JsonResponse

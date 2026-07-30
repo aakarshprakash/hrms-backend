@@ -199,9 +199,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('payroll-runs/{run}', [PayrollRunController::class, 'destroy']);
     Route::post('payroll-runs/{run}/run', [PayrollRunController::class, 'run']);
     Route::get('payroll-runs/{run}/status', [PayrollRunController::class, 'status']);
+    Route::get('payroll-runs/{run}/preview', [PayrollRunController::class, 'preview']);
     Route::get('payroll-runs/{run}/bank-export', [PayrollRunController::class, 'bankExport']);
     Route::get('payroll-runs/{run}/adjustments', [PayrollAdjustmentController::class, 'index']);
     Route::post('payroll-runs/{run}/adjustments', [PayrollAdjustmentController::class, 'store']);
+    Route::post('payroll-runs/{run}/adjustments/bulk', [PayrollAdjustmentController::class, 'bulkStore']);
+    Route::put('payroll-adjustments/{adjustment}', [PayrollAdjustmentController::class, 'update']);
     Route::delete('payroll-adjustments/{adjustment}', [PayrollAdjustmentController::class, 'destroy']);
 
     // Payslips
