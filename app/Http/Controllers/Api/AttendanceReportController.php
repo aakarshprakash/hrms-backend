@@ -153,6 +153,110 @@ class AttendanceReportController extends Controller
     }
 
     /**
+     * One row per employee per day, with actual check-in/check-out times --
+     * the detail view behind the monthly summary's day counts.
+     */
+    public function daily(Request $request)
+    {
+        $this->assertCanView($request);
+
+        $validated = $request->validate([
+            'month' => ['required', 'integer', 'min:1', 'max:12'],
+            'year' => ['required', 'integer', 'min:2000', 'max:2100'],
+            'branch_id' => ['nullable', 'integer', 'exists:branches,id'],
+            'department_id' => ['nullable', 'integer', 'exists:departments,id'],
+            'employee_id' => ['nullable', 'integer', 'exists:employees,id'],
+        ]);
+
+        $rows = $this->buildDaily($validated);
+
+        return response()->json(['data' => $rows]);
+    }
+
+    public function dailyExport(Request $request): StreamedResponse
+    {
+        $this->assertCanView($request);
+
+        $validated = $request->validate([
+            'month' => ['required', 'integer', 'min:1', 'max:12'],
+            'year' => ['required', 'integer', 'min:2000', 'max:2100'],
+            'branch_id' => ['nullable', 'integer', 'exists:branches,id'],
+            'department_id' => ['nullable', 'integer', 'exists:departments,id'],
+            'employee_id' => ['nullable', 'integer', 'exists:employees,id'],
+        ]);
+
+        $rows = $this->buildDaily($validated);
+        $filename = "attendance-daily-{$validated['year']}-{$validated['month']}.csv";
+
+        return response()->streamDownload(function () use ($rows) {
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Employee Code', 'Name', 'Branch', 'Department', 'Date', 'Status', 'Check In', 'Check Out', 'Worked Hours', 'Late By (min)']);
+            foreach ($rows as $r) {
+                fputcsv($out, [
+                    $r['employee']['employee_code'], $r['employee']['name'], $r['employee']['branch'], $r['employee']['department'],
+                    $r['date'], $r['status'], $r['check_in'] ?? '', $r['check_out'] ?? '', $r['worked_hours'] ?? '', $r['late_by_minutes'] ?? '',
+                ]);
+            }
+            fclose($out);
+        }, $filename, ['Content-Type' => 'text/csv']);
+    }
+
+    private function buildDaily(array $filters): array
+    {
+        $month = $filters['month'];
+        $year = $filters['year'];
+        $monthStart = Carbon::create($year, $month, 1)->startOfDay();
+        $monthEnd = $monthStart->copy()->endOfMonth();
+
+        $employees = Employee::with(['branch:id,name', 'department:id,name'])
+            ->where('status', 'active')
+            ->when(!empty($filters['branch_id']), fn ($q) => $q->where('branch_id', $filters['branch_id']))
+            ->when(!empty($filters['department_id']), fn ($q) => $q->where('department_id', $filters['department_id']))
+            ->when(!empty($filters['employee_id']), fn ($q) => $q->where('id', $filters['employee_id']))
+            ->orderBy('first_name')
+            ->get();
+
+        if ($employees->isEmpty()) {
+            return [];
+        }
+
+        $employeesById = $employees->keyBy('id');
+
+        $attendances = Attendance::whereIn('employee_id', $employees->pluck('id'))
+            ->whereBetween('date', [$monthStart->toDateString(), $monthEnd->toDateString()])
+            ->orderBy('date')
+            ->get();
+
+        $rows = [];
+        foreach ($attendances as $att) {
+            $emp = $employeesById->get($att->employee_id);
+            if (!$emp) {
+                continue;
+            }
+
+            $rows[] = [
+                'employee' => [
+                    'id' => $emp->id,
+                    'employee_code' => $emp->employee_code,
+                    'name' => $emp->full_name,
+                    'branch' => $emp->branch?->name,
+                    'department' => $emp->department?->name,
+                ],
+                'date' => $att->date->toDateString(),
+                'status' => $att->status,
+                'check_in' => $att->check_in?->format('H:i'),
+                'check_out' => $att->check_out?->format('H:i'),
+                'worked_hours' => $att->worked_minutes ? round($att->worked_minutes / 60, 1) : null,
+                'late_by_minutes' => $att->late_by_minutes,
+            ];
+        }
+
+        usort($rows, fn ($a, $b) => [$a['employee']['name'], $a['date']] <=> [$b['employee']['name'], $b['date']]);
+
+        return $rows;
+    }
+
+    /**
      * Classic employee × day grid (muster roll) — a statutory-style register
      * showing a single status letter per employee per day of the month.
      */

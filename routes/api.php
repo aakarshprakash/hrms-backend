@@ -157,6 +157,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('attendance/manual', [AttendanceController::class, 'manualUpsert']);
     Route::get('attendance/reports/summary', [AttendanceReportController::class, 'summary']);
     Route::get('attendance/reports/summary/export', [AttendanceReportController::class, 'summaryExport']);
+    Route::get('attendance/reports/daily', [AttendanceReportController::class, 'daily']);
+    Route::get('attendance/reports/daily/export', [AttendanceReportController::class, 'dailyExport']);
     Route::get('attendance/reports/muster-roll', [AttendanceReportController::class, 'musterRoll']);
     Route::get('attendance/exceptions', [AttendanceExceptionController::class, 'index']);
     Route::get('attendance', [AttendanceController::class, 'index']);
