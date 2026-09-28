@@ -2,12 +2,14 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCompany;
+use App\Models\Concerns\VisibleThroughEmployee;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
 class OvertimeRequest extends Model
 {
-    use HasFactory;
+    use BelongsToCompany, VisibleThroughEmployee, HasFactory;
 
     protected $fillable = [
         'employee_id',
@@ -35,6 +37,11 @@ class OvertimeRequest extends Model
     public function approver()
     {
         return $this->belongsTo(User::class, 'approved_by');
+    }
+
+    public function approvalActions()
+    {
+        return $this->morphMany(ApprovalAction::class, 'requestable');
     }
 
     public function onApproved(): void

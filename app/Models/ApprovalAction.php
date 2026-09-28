@@ -2,18 +2,22 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCompany;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class ApprovalAction extends Model
 {
-    use HasFactory;
+    use BelongsToCompany, HasFactory;
+
+    protected array $tenantParents = ['flow_id' => 'approval_flows'];
 
     protected $fillable = [
         'flow_id',
         'requestable_type',
         'requestable_id',
         'step_number',
+        'approver_type',
         'approver_id',
         'status',
         'acted_at',

@@ -6,40 +6,33 @@ use App\Http\Controllers\Controller;
 use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\Leave;
-use Illuminate\Http\Request;
 use Carbon\Carbon;
+use Illuminate\Http\Request;
 
 class DashboardController extends Controller
 {
+    /** Headline counts, limited to what the viewer's data scope covers. */
     public function stats(Request $request)
     {
-        $branchId = $request->query('branch_id');
+        $user = $request->user();
+        $branchId = $this->requestedBranchId();
         $today = Carbon::today()->toDateString();
 
-        $employeeQuery = Employee::query()->where('status', 'active');
-        if ($branchId) $employeeQuery->where('branch_id', $branchId);
-        $employeesCount = $employeeQuery->count();
+        $inBranch = fn ($q) => $branchId ? $q->whereHas('employee', fn ($e) => $e->where('branch_id', $branchId)) : $q;
 
-        $presentQuery = Attendance::whereDate('date', $today)
-            ->whereIn('status', ['present', 'late']);
-        if ($branchId) {
-            $presentQuery->whereHas('employee', fn($q) => $q->where('branch_id', $branchId));
-        }
-        $presentToday = $presentQuery->count();
+        $employeesCount = Employee::visibleTo($user)
+            ->where('status', 'active')
+            ->when($branchId, fn ($q) => $q->where('branch_id', $branchId))
+            ->count();
 
-        $pendingLeavesQuery = Leave::where('status', 'pending');
-        if ($branchId) {
-            $pendingLeavesQuery->whereHas('employee', fn($q) => $q->where('branch_id', $branchId));
-        }
-        $pendingLeaves = $pendingLeavesQuery->count();
+        $presentToday = $inBranch(Attendance::visibleTo($user)->whereDate('date', $today)
+            ->whereIn('status', ['present', 'late']))->count();
 
-        $onLeaveQuery = Leave::where('status', 'approved')
+        $pendingLeaves = $inBranch(Leave::visibleTo($user)->where('status', 'pending'))->count();
+
+        $onLeaveToday = $inBranch(Leave::visibleTo($user)->where('status', 'approved')
             ->where('start_date', '<=', $today)
-            ->where('end_date', '>=', $today);
-        if ($branchId) {
-            $onLeaveQuery->whereHas('employee', fn($q) => $q->where('branch_id', $branchId));
-        }
-        $onLeaveToday = $onLeaveQuery->count();
+            ->where('end_date', '>=', $today))->count();
 
         return response()->json([
             'data' => [

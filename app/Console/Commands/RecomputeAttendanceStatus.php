@@ -2,56 +2,24 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Attendance;
-use App\Models\Employee;
-use App\Services\AttendanceStatusResolver;
 use Illuminate\Console\Command;
 
+/**
+ * Superseded by attendance:process (which reprocesses from raw punches with
+ * the full shift rules). Kept as a thin alias so existing runbooks work.
+ */
 class RecomputeAttendanceStatus extends Command
 {
-    protected $signature = 'attendance:recompute-status {--branch_id=}';
+    protected $signature = 'attendance:recompute-status {--branch_id=} {--from=} {--to=}';
 
-    protected $description = 'Backfill shift/late/early/worked-time fields on attendance rows created before the auto-status engine existed';
+    protected $description = 'Alias of attendance:process (recompute daily attendance from punches)';
 
-    public function handle(AttendanceStatusResolver $resolver): int
+    public function handle(): int
     {
-        $query = Attendance::whereNotNull('check_in')
-            ->whereNull('worked_minutes')
-            ->where('source', '!=', 'manual'); // manual entries are computed at write time already
-
-        if ($branchId = $this->option('branch_id')) {
-            $query->whereHas('employee', fn ($q) => $q->where('branch_id', $branchId));
-        }
-
-        $rows = $query->with('employee')->get();
-
-        if ($rows->isEmpty()) {
-            $this->info('Nothing to backfill.');
-            return self::SUCCESS;
-        }
-
-        $employees = Employee::withoutGlobalScopes()->whereIn('id', $rows->pluck('employee_id')->unique())->get()->keyBy('id');
-        $updated = 0;
-
-        foreach ($rows as $att) {
-            $employee = $employees->get($att->employee_id);
-            if (! $employee) {
-                continue;
-            }
-
-            $resolved = $resolver->resolve($employee, $att->date->toDateString(), $att->check_in, $att->check_out);
-
-            $att->update([
-                'shift_id' => $resolved['shift_id'],
-                'status' => $resolved['status'],
-                'late_by_minutes' => $resolved['late_by_minutes'],
-                'early_by_minutes' => $resolved['early_by_minutes'],
-                'worked_minutes' => $resolved['worked_minutes'],
-            ]);
-            $updated++;
-        }
-
-        $this->info("Recomputed {$updated} attendance record(s).");
-        return self::SUCCESS;
+        return $this->call('attendance:process', array_filter([
+            '--branch' => $this->option('branch_id'),
+            '--from' => $this->option('from') ?? now()->subDays(30)->toDateString(),
+            '--to' => $this->option('to') ?? now()->toDateString(),
+        ]));
     }
 }

@@ -2,58 +2,65 @@
 
 namespace Database\Seeders;
 
-use App\Models\Branch;
+use App\Models\Company;
 use App\Models\Employee;
 use App\Models\User;
+use App\Support\Access\Roles;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
-use Spatie\Permission\Models\Role;
 
+/**
+ * Development accounts. Roles themselves come from PermissionCatalogSeeder.
+ */
 class RolePermissionSeeder extends Seeder
 {
     public function run(): void
     {
-        // Create roles
-        $roles = ['super_admin', 'branch_admin', 'hr', 'manager', 'employee'];
-
-        foreach ($roles as $roleName) {
-            Role::firstOrCreate(['name' => $roleName, 'guard_name' => 'web']);
-        }
-
-        // Super admin is a SYSTEM user (solution operator) — it must never
-        // appear in the employee directory, so no Employee record is created.
-        $superAdminUser = User::create([
-            'name' => 'Super Admin',
-            'email' => 'admin@hrms.test',
+        // Platform operator: belongs to no organisation, never an employee.
+        $platform = User::firstOrCreate(['email' => 'admin@hrms.test'], [
+            'name' => 'Platform Admin',
             'password' => Hash::make('password'),
             'is_super_admin' => true,
             'user_type' => 'system',
         ]);
+        $platform->syncRoles([Roles::SUPER_ADMIN]);
 
-        $superAdminUser->assignRole('super_admin');
+        $acme = Company::where('slug', 'acme-corp')->first();
+        if (! $acme) {
+            return;
+        }
+        $headOffice = $acme->branches()->orderBy('id')->first();
 
-        // Branch HR is a staff member (employee login) for testing branch scope
-        $hrUser = User::create([
-            'name' => 'Jane HR',
-            'email' => 'hr@hrms.test',
+        $owner = User::firstOrCreate(['email' => 'owner@acme.test'], [
+            'name' => 'Acme Owner',
             'password' => Hash::make('password'),
-            'branch_id' => 1,
+            'user_type' => 'system',
+            'branch_id' => $headOffice->id,
+        ]);
+        $owner->syncRoles([Roles::TENANT_ADMIN]);
+
+        // Branch HR is a staff member (employee login) for testing branch scope.
+        $hrUser = User::firstOrCreate(['email' => 'hr@hrms.test'], [
+            'name' => 'Jane HR',
+            'password' => Hash::make('password'),
+            'branch_id' => $headOffice->id,
             'user_type' => 'employee',
         ]);
+        $hrUser->syncRoles([Roles::HR]);
 
-        $hrUser->assignRole('hr');
-
-        $hrEmployee = Employee::create([
-            'branch_id' => 1,
-            'employee_code' => 'EMP002',
-            'first_name' => 'Jane',
-            'last_name' => 'HR',
-            'email' => 'hr@hrms.test',
-            'date_of_joining' => now()->toDateString(),
-            'status' => 'active',
-        ]);
+        $hrEmployee = Employee::firstOrCreate(
+            ['company_id' => $acme->id, 'employee_code' => 'EMP002'],
+            [
+                'branch_id' => $headOffice->id,
+                'first_name' => 'Jane',
+                'last_name' => 'HR',
+                'email' => 'hr@hrms.test',
+                'date_of_joining' => now()->toDateString(),
+                'status' => 'active',
+                'user_id' => $hrUser->id,
+            ]
+        );
 
         $hrUser->update(['employee_id' => $hrEmployee->id]);
-        $hrEmployee->update(['user_id' => $hrUser->id]);
     }
 }

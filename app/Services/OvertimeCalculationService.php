@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Scopes\BranchScope;
 use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\OvertimeRule;
@@ -25,7 +26,7 @@ class OvertimeCalculationService
         }
 
         // Get OT rule for employee's branch
-        $rule = OvertimeRule::withoutGlobalScopes()
+        $rule = OvertimeRule::withoutGlobalScope(BranchScope::class)
             ->where('branch_id', $employee->branch_id)
             ->first();
 
@@ -84,7 +85,7 @@ class OvertimeCalculationService
     private function getShiftForDate(Employee $employee, Carbon $date)
     {
         // First try shift_rosters for specific date assignment
-        $roster = \App\Models\ShiftRoster::withoutGlobalScopes()
+        $roster = \App\Models\ShiftRoster::withoutGlobalScope(BranchScope::class)
             ->where('employee_id', $employee->id)
             ->whereDate('date', $date)
             ->with('shift')

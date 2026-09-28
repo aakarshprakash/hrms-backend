@@ -5,48 +5,66 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\LoginRequest;
 use App\Http\Requests\RegisterEmployeeRequest;
-use App\Models\Branch;
+use App\Models\Company;
 use App\Models\Employee;
 use App\Models\User;
+use App\Support\Access\Roles;
+use App\Support\Access\SessionPayload;
+use App\Support\Tenancy\TenantContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Password;
+use Illuminate\Validation\Rules\Password as PasswordRule;
 use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
+    public function __construct(private readonly TenantContext $context)
+    {
+    }
+
     public function login(LoginRequest $request): JsonResponse
     {
-        $credentials = $request->only('email', 'password');
+        $user = User::where('email', strtolower($request->input('email')))->first();
 
-        if (! Auth::attempt($credentials)) {
+        // Same message whether the email or the password is wrong.
+        if (! $user || ! Hash::check($request->input('password'), $user->password)) {
             throw ValidationException::withMessages([
                 'email' => ['The provided credentials are incorrect.'],
             ]);
         }
 
-        $user = Auth::user();
-        $token = $user->createToken('api-token')->plainTextToken;
+        if (! $user->is_active) {
+            throw ValidationException::withMessages([
+                'email' => ['Your account has been deactivated. Contact your administrator.'],
+            ]);
+        }
 
-        $accessibleBranchIds = $user->accessible_branch_ids;
-        $branches = empty($accessibleBranchIds)
-            ? Branch::with('company')->get()
-            : Branch::with('company')->whereIn('id', $accessibleBranchIds)->get();
+        if ($user->company_id !== null) {
+            $company = $this->context->withoutScoping(fn () => Company::find($user->company_id));
 
-        $user->load(['employee', 'branch']);
+            if (! $company || ! $company->isActive()) {
+                throw ValidationException::withMessages([
+                    'email' => ['Your organisation\'s account is not active. Please contact support.'],
+                ]);
+            }
+        }
+
+        $this->context->set($user->company_id);
+        $this->context->enforce();
+
+        $user->forceFill(['last_login_at' => now(), 'last_login_ip' => $request->ip()])->saveQuietly();
+
+        $expiresAt = ($minutes = config('sanctum.expiration')) ? now()->addMinutes((int) $minutes) : null;
+        $token = $user->createToken($this->deviceName($request), ['*'], $expiresAt)->plainTextToken;
 
         return response()->json([
-            'data' => [
-                'user' => array_merge($user->toArray(), [
-                    'roles' => $user->getRoleNames(),
-                    'permissions' => $user->getAllPermissions()->pluck('name'),
-                ]),
+            'data' => array_merge(SessionPayload::for($user), [
                 'token' => $token,
-                'branches' => $branches,
-            ],
+                'expires_at' => $expiresAt?->toIso8601String(),
+            ]),
             'message' => 'Login successful.',
         ]);
     }
@@ -64,18 +82,52 @@ class AuthController extends Controller
         ]);
     }
 
+    /** Sign out of every device (e.g. after a lost phone). */
+    public function logoutAll(Request $request): JsonResponse
+    {
+        $request->user()->tokens()->delete();
+
+        return response()->json(['data' => null, 'message' => 'Signed out of all devices.']);
+    }
+
     public function me(Request $request): JsonResponse
     {
-        $user = $request->user()->load(['employee', 'branch']);
+        $payload = SessionPayload::for($request->user());
 
         return response()->json([
-            'data' => [
-                'user' => $user,
-                'roles' => $user->getRoleNames(),
-                'permissions' => $user->getAllPermissions()->pluck('name'),
-            ],
+            'data' => array_merge($payload, [
+                // Legacy top-level keys.
+                'roles' => $payload['user']['roles'],
+                'permissions' => $payload['user']['permissions'],
+            ]),
             'message' => 'Authenticated user retrieved.',
         ]);
+    }
+
+    public function changePassword(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'current_password' => ['required', 'string'],
+            'password' => ['required', 'string', 'confirmed', 'different:current_password', PasswordRule::min(8)->letters()->numbers()],
+        ]);
+
+        if (! Hash::check($validated['current_password'], $user->password)) {
+            throw ValidationException::withMessages(['current_password' => ['Your current password is incorrect.']]);
+        }
+
+        $user->forceFill([
+            'password' => Hash::make($validated['password']),
+            'password_changed_at' => now(),
+            'must_change_password' => false,
+        ])->save();
+
+        // Keep this session, end every other one.
+        $currentId = $user->currentAccessToken()?->id;
+        $user->tokens()->when($currentId, fn ($q) => $q->where('id', '!=', $currentId))->delete();
+
+        return response()->json(['data' => null, 'message' => 'Password changed. Other devices have been signed out.']);
     }
 
     public function register(RegisterEmployeeRequest $request): JsonResponse
@@ -83,12 +135,13 @@ class AuthController extends Controller
         $result = DB::transaction(function () use ($request) {
             $user = User::create([
                 'name' => $request->name,
-                'email' => $request->email,
+                'email' => strtolower($request->email),
                 'password' => Hash::make($request->password),
                 'branch_id' => $request->branch_id,
+                'user_type' => 'employee',
             ]);
 
-            $user->assignRole('employee');
+            $user->assignRole(Roles::EMPLOYEE);
 
             $employee = Employee::create([
                 'branch_id' => $request->branch_id,
@@ -116,17 +169,13 @@ class AuthController extends Controller
     {
         $request->validate(['email' => ['required', 'email']]);
 
-        $status = Password::sendResetLink($request->only('email'));
+        // Always the same answer, so the endpoint can't be used to discover
+        // which emails have accounts.
+        Password::sendResetLink(['email' => strtolower($request->input('email'))]);
 
-        if ($status === Password::RESET_LINK_SENT) {
-            return response()->json([
-                'data' => null,
-                'message' => __($status),
-            ]);
-        }
-
-        throw ValidationException::withMessages([
-            'email' => [__($status)],
+        return response()->json([
+            'data' => null,
+            'message' => 'If an account exists for that email, a reset link has been sent.',
         ]);
     }
 
@@ -135,13 +184,20 @@ class AuthController extends Controller
         $request->validate([
             'token' => ['required'],
             'email' => ['required', 'email'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
+            'password' => ['required', 'string', 'confirmed', PasswordRule::min(8)->letters()->numbers()],
         ]);
 
         $status = Password::reset(
             $request->only('email', 'password', 'password_confirmation', 'token'),
             function (User $user, string $password) {
-                $user->forceFill(['password' => Hash::make($password)])->save();
+                $user->forceFill([
+                    'password' => Hash::make($password),
+                    'password_changed_at' => now(),
+                    'must_change_password' => false,
+                ])->save();
+
+                // A reset means the old password may be compromised.
+                $user->tokens()->delete();
             }
         );
 
@@ -155,5 +211,12 @@ class AuthController extends Controller
         throw ValidationException::withMessages([
             'email' => [__($status)],
         ]);
+    }
+
+    private function deviceName(Request $request): string
+    {
+        $agent = (string) $request->userAgent();
+
+        return mb_substr($request->input('device_name') ?: ($agent ?: 'api-token'), 0, 120);
     }
 }

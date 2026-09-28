@@ -2,13 +2,14 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCompany;
 use App\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
 class OvertimeRule extends Model
 {
-    use HasFactory, HasBranchScope;
+    use BelongsToCompany, HasFactory, HasBranchScope;
 
     protected $fillable = [
         'branch_id',

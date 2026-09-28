@@ -19,7 +19,8 @@ class AiInsightsController extends Controller
 {
     public function insights(Request $request): JsonResponse
     {
-        $branchId = $request->filled('branch_id') ? $request->integer('branch_id') : null;
+        $user = $request->user();
+        $branchId = $this->requestedBranchId();
         $today = Carbon::today();
         $monthStart = $today->copy()->startOfMonth();
 
@@ -27,10 +28,10 @@ class AiInsightsController extends Controller
         // scope also gets applied to queries joined with other
         // branch_id-having tables (e.g. departments in $byDepartment below),
         // where an unqualified column reference is ambiguous to MySQL.
-        $scope = fn ($q) => $branchId ? $q->where('employees.branch_id', $branchId) : $q;
+        $scope = fn ($q) => $branchId ? $q->visibleTo($user)->where('employees.branch_id', $branchId) : $q->visibleTo($user);
         $empScope = fn ($q) => $branchId
-            ? $q->whereHas('employee', fn ($e) => $e->where('branch_id', $branchId))
-            : $q;
+            ? $q->visibleTo($user)->whereHas('employee', fn ($e) => $e->where('branch_id', $branchId))
+            : $q->visibleTo($user);
 
         $insights = [];
 
@@ -179,7 +180,7 @@ class AiInsightsController extends Controller
         }
 
         // --- Analytics blocks for charts ---
-        $byBranch = Employee::where('status', 'active')
+        $byBranch = Employee::visibleTo($user)->where('status', 'active')
             ->join('branches', 'branches.id', '=', 'employees.branch_id')
             ->select('branches.name as label', DB::raw('COUNT(employees.id) as value'))
             ->groupBy('branches.name')

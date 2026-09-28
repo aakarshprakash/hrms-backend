@@ -62,7 +62,8 @@ class StoreEmployeeRequest extends FormRequest
 
             // The login account is created with the employee's email, so it
             // must not collide with any existing user's email.
-            if ($this->filled('email') && \App\Models\User::where('email', $this->input('email'))->exists()) {
+            // Login emails are unique platform-wide, so check every tenant.
+            if ($this->filled('email') && \Illuminate\Support\Facades\DB::table('users')->where('email', $this->input('email'))->exists()) {
                 $validator->errors()->add('email', 'This email is already used by another account. Use a different email, or turn off login creation for this employee.');
             }
         });
@@ -96,6 +97,16 @@ class StoreEmployeeRequest extends FormRequest
             'notice_period_days' => ['nullable', 'integer', 'min:0', 'max:365'],
             'work_location' => ['nullable', 'string', 'max:191'],
             'notes' => ['nullable', 'string', 'max:5000'],
+            // Attendance & statutory
+            'weekly_off_days' => ['nullable', 'array'],
+            'weekly_off_days.*' => ['integer', 'between:0,6'],
+            'uan' => ['nullable', 'digits:12'],
+            'pf_number' => ['nullable', 'string', 'max:30'],
+            'esi_number' => ['nullable', 'string', 'max:20'],
+            'pf_opted_out' => ['sometimes', 'boolean'],
+            'pt_exempt' => ['sometimes', 'boolean'],
+            'tax_regime' => ['sometimes', Rule::in(['new', 'old'])],
+            'declared_deductions' => ['sometimes', 'numeric', 'min:0', 'max:10000000'],
         ];
     }
 }

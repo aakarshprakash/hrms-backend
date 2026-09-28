@@ -44,6 +44,9 @@ class HolidayController extends Controller
             'recurring' => 'boolean',
         ]);
 
+        $this->authorizeBranch((int) $validated['branch_id']);
+
+
         $holiday = Holiday::create($validated);
 
         return response()->json(['data' => $holiday, 'message' => 'Holiday created successfully.'], 201);
@@ -62,6 +65,13 @@ class HolidayController extends Controller
             'date' => 'sometimes|date',
             'recurring' => 'boolean',
         ]);
+
+        if (($newBranch = ($validated['branch_id'] ?? null)) !== null) {
+
+            $this->authorizeBranch((int) $newBranch);
+
+        }
+
 
         $holiday->update($validated);
 

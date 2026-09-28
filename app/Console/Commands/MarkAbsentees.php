@@ -2,149 +2,82 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Attendance;
 use App\Models\Branch;
-use App\Models\Employee;
-use App\Models\Holiday;
-use App\Models\Leave;
-use App\Services\AttendanceStatusResolver;
+use App\Models\Scopes\BranchScope;
+use App\Services\Attendance\AttendanceProcessor;
+use App\Support\Tenancy\TenantContext;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 
 /**
- * Turns "no punch recorded" into a real, persisted absent Attendance row.
- * Nothing else in the app proactively does this -- every report/roster view
- * otherwise invents its own private "no data" bucket instead of treating a
- * missing day as an absence. Idempotent: safe to re-run for any date, since
- * it only ever creates a row where one doesn't already exist.
+ * Nightly close of the attendance day: processes "yesterday" for every
+ * branch, in that branch's own timezone, so anyone with no punches on a
+ * working day becomes absent (and weekly offs / holidays / leave are filled
+ * in). Runs hourly from the scheduler; each run only acts on branches whose
+ * local day has rolled over, and processing is idempotent.
+ *
+ * Kept under its original name for the existing scheduler/cron entries.
  */
 class MarkAbsentees extends Command
 {
     protected $signature = 'attendance:mark-absentees {--date=} {--from=} {--to=} {--branch_id=}';
 
-    protected $description = 'Create absent Attendance rows for active employees with no punch on working days';
+    protected $description = 'Close attendance days: derive absent / weekly-off / holiday / leave rows (per branch timezone)';
 
-    public function handle(AttendanceStatusResolver $resolver): int
+    public function handle(AttendanceProcessor $processor, TenantContext $context): int
     {
-        $branches = Branch::withoutGlobalScopes()
+        $branches = Branch::withoutGlobalScope(BranchScope::class)
             ->when($this->option('branch_id'), fn ($q, $id) => $q->where('id', $id))
+            ->whereHas('company', fn ($q) => $q->where('status', 'active'))
             ->get();
 
         if ($branches->isEmpty()) {
             $this->error('No matching branch found.');
+
             return self::FAILURE;
         }
 
-        $totalCreated = 0;
+        $total = 0;
+
+        $unattended = ! $this->option('date') && ! $this->option('from') && ! $this->option('branch_id');
 
         foreach ($branches as $branch) {
-            $dates = $this->resolveDatesForBranch($branch);
+            [$from, $to] = $this->rangeFor($branch);
 
-            foreach ($dates as $date) {
-                $totalCreated += $this->processBranchDate($branch, $date, $resolver);
+            // Scheduled hourly so each branch closes soon after its own
+            // midnight -- but each branch-day only needs closing once.
+            if ($unattended && ! Cache::add("attendance-closed:{$branch->id}:{$to}", true, now()->addDays(2))) {
+                continue;
             }
+
+            $total += $context->runAs($branch->company_id, function () use ($processor, $branch, $from, $to) {
+                $employees = AttendanceProcessor::employeesQuery($branch->id)->get();
+
+                return $processor->processEmployees($employees, $from, $to)['processed'];
+            });
         }
 
-        $this->info("Created {$totalCreated} absent record(s).");
+        $this->info("Processed {$total} employee-day(s).");
+
         return self::SUCCESS;
     }
 
-    /**
-     * @return array<int, Carbon>
-     */
-    private function resolveDatesForBranch(Branch $branch): array
+    /** @return array{0: string, 1: string} */
+    private function rangeFor(Branch $branch): array
     {
         if ($this->option('from') && $this->option('to')) {
-            $dates = [];
-            $cursor = Carbon::parse($this->option('from'));
-            $end = Carbon::parse($this->option('to'));
-            while ($cursor->lte($end)) {
-                $dates[] = $cursor->copy();
-                $cursor->addDay();
-            }
-            return $dates;
+            return [Carbon::parse($this->option('from'))->toDateString(), Carbon::parse($this->option('to'))->toDateString()];
         }
 
         if ($this->option('date')) {
-            return [Carbon::parse($this->option('date'))];
+            $d = Carbon::parse($this->option('date'))->toDateString();
+
+            return [$d, $d];
         }
 
-        // Default, unattended mode: "yesterday" in this branch's own
-        // timezone -- a single fixed server-clock time can't safely be
-        // "past midnight" for every branch at once.
-        return [Carbon::now($branch->timezone ?: 'UTC')->subDay()->startOfDay()];
-    }
+        $yesterday = Carbon::now($branch->timezone ?: 'UTC')->subDay()->toDateString();
 
-    private function processBranchDate(Branch $branch, Carbon $date, AttendanceStatusResolver $resolver): int
-    {
-        if (!$branch->isWorkingDay($date)) {
-            return 0;
-        }
-
-        $isHoliday = Holiday::withoutGlobalScopes()
-            ->where('branch_id', $branch->id)
-            ->get()
-            ->contains(function ($h) use ($date) {
-                $holidayDate = $h->recurring ? $h->date->copy()->setYear($date->year) : $h->date;
-                return $holidayDate->isSameDay($date);
-            });
-
-        if ($isHoliday) {
-            return 0;
-        }
-
-        $employees = Employee::withoutGlobalScopes()
-            ->where('branch_id', $branch->id)
-            ->where('status', 'active')
-            ->get();
-
-        if ($employees->isEmpty()) {
-            return 0;
-        }
-
-        $existingEmployeeIds = Attendance::whereIn('employee_id', $employees->pluck('id'))
-            ->whereDate('date', $date->toDateString())
-            ->pluck('employee_id')
-            ->all();
-
-        $onApprovedLeaveEmployeeIds = Leave::whereIn('employee_id', $employees->pluck('id'))
-            ->where('status', 'approved')
-            ->whereDate('start_date', '<=', $date->toDateString())
-            ->whereDate('end_date', '>=', $date->toDateString())
-            ->pluck('employee_id')
-            ->all();
-
-        $skip = array_flip(array_merge($existingEmployeeIds, $onApprovedLeaveEmployeeIds));
-
-        $created = 0;
-
-        DB::transaction(function () use ($employees, $skip, $date, $resolver, &$created) {
-            foreach ($employees as $employee) {
-                if (isset($skip[$employee->id])) {
-                    continue;
-                }
-                if ($employee->date_of_joining && $employee->date_of_joining->gt($date)) {
-                    continue;
-                }
-                if ($employee->date_of_leaving && $employee->date_of_leaving->lt($date)) {
-                    continue;
-                }
-
-                $resolved = $resolver->resolve($employee, $date->toDateString(), null, null);
-
-                Attendance::create([
-                    'employee_id' => $employee->id,
-                    'shift_id' => $resolved['shift_id'],
-                    'date' => $date->toDateString(),
-                    'status' => 'absent',
-                    'source' => 'system',
-                ]);
-
-                $created++;
-            }
-        });
-
-        return $created;
+        return [$yesterday, $yesterday];
     }
 }

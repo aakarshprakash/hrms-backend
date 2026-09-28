@@ -19,14 +19,15 @@ class CertificateRequestController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $user     = auth()->user();
-        $employee = $user->employee ?? null;
-
+        $user  = $request->user();
         $query = CertificateRequest::with(['employee', 'template']);
 
-        // Employees only see their own requests
-        if ($employee && !$request->boolean('all')) {
-            $query->where('employee_id', $employee->id);
+        // Managers of certificates may list everyone in scope with ?all=1;
+        // everyone else only ever sees their own requests.
+        if ($request->boolean('all') && $user->can('certificates.manage')) {
+            $query->visibleTo($user);
+        } else {
+            $query->where('employee_id', $user->employee_id ?? 0);
         }
 
         if ($request->filled('status')) {
@@ -45,13 +46,22 @@ class CertificateRequestController extends Controller
             'template_id' => 'required|exists:certificate_templates,id',
         ]);
 
-        $employeeId = $validated['employee_id'] ?? optional($user->employee)->id;
+        $employeeId = $validated['employee_id'] ?? $user->employee_id;
 
         if (!$employeeId) {
             return response()->json(['message' => 'Employee not found for this user.'], 422);
         }
 
-        $template = CertificateTemplate::findOrFail($validated['template_id']);
+        // Requesting on someone else's behalf is an HR action.
+        if ((int) $employeeId !== $user->employee_id) {
+            abort_unless($user->can('certificates.manage'), 403, 'You can only request certificates for yourself.');
+        }
+        $employee = $this->authorizeEmployeeVisible((int) $employeeId);
+
+        $template = CertificateTemplate::withoutGlobalScope(\App\Models\Scopes\BranchScope::class)->findOrFail($validated['template_id']);
+        if ($template->branch_id !== $employee->branch_id) {
+            return response()->json(['message' => "This template is not available for the employee's branch."], 422);
+        }
 
         if ($template->status !== 'published') {
             return response()->json(['message' => 'Template must be published.'], 422);
@@ -69,11 +79,15 @@ class CertificateRequestController extends Controller
 
     public function show(CertificateRequest $request): JsonResponse
     {
+        $this->authorizeEmployeeVisible($request->employee_id);
+
         return response()->json(['data' => $request->load(['employee', 'template', 'issuedCertificate'])]);
     }
 
     public function approve(CertificateRequest $request): JsonResponse
     {
+        $this->assertActionable($request);
+
         $request->update([
             'approved_by' => auth()->id(),
             'status'      => 'approved',
@@ -115,8 +129,8 @@ class CertificateRequestController extends Controller
         ])->render();
 
         $pdf      = Pdf::loadHtml($fullHtml)->setPaper('a4', 'portrait');
-        $filename = 'certificates/' . $certNumber . '.pdf';
-        Storage::disk('public')->put($filename, $pdf->output());
+        $filename = \App\Support\Tenancy\TenantStorage::path($request->company_id, 'certificates/' . $certNumber . '.pdf');
+        Storage::disk('local')->put($filename, $pdf->output());
 
         // Create IssuedCertificate
         $issued = IssuedCertificate::create([
@@ -134,6 +148,8 @@ class CertificateRequestController extends Controller
 
     public function reject(CertificateRequest $request): JsonResponse
     {
+        $this->assertActionable($request);
+
         $request->validate([
             'comments' => 'nullable|string',
         ]);
@@ -144,5 +160,15 @@ class CertificateRequestController extends Controller
         ]);
 
         return response()->json(['data' => $request]);
+    }
+
+    private function assertActionable(CertificateRequest $certRequest): void
+    {
+        abort_unless($certRequest->status === 'pending', 422, 'This request has already been processed.');
+        $this->authorizeEmployeeVisible($certRequest->employee_id);
+
+        $user = request()->user();
+        abort_if($certRequest->employee_id === $user->employee_id && ! $user->isTenantAdmin(), 403,
+            'You cannot approve or reject your own request.');
     }
 }

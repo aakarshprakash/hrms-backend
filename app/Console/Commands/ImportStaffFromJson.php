@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Scopes\BranchScope;
 use App\Models\Branch;
 use App\Models\Department;
 use App\Models\Designation;
@@ -28,7 +29,7 @@ use Illuminate\Support\Str;
  */
 class ImportStaffFromJson extends Command
 {
-    protected $signature = 'staff:import {json_path} {--branch=} {--dry-run}';
+    protected $signature = 'staff:import {json_path} {--branch=} {--company= : Company id or slug, required when the branch name exists in several organisations} {--dry-run}';
 
     protected $description = 'Import employees + basic salary + login accounts from a prepared staff JSON file';
 
@@ -47,16 +48,40 @@ class ImportStaffFromJson extends Command
         }
 
         $branchName = $this->option('branch') ?: 'Legacy TVS';
-        $branch = Branch::withoutGlobalScopes()->where('name', $branchName)->first();
-        if (! $branch) {
+        $branches = Branch::withoutGlobalScope(BranchScope::class)
+            ->where('name', $branchName)
+            ->when($this->option('company'), fn ($q, $company) => $q->where(
+                fn ($c) => $c->where('company_id', ctype_digit((string) $company) ? (int) $company : 0)
+                    ->orWhereIn('company_id', \App\Models\Company::where('slug', $company)->select('id'))
+            ))
+            ->get();
+
+        if ($branches->isEmpty()) {
             $this->error("Branch \"{$branchName}\" not found. Create it first.");
             return self::FAILURE;
         }
 
+        if ($branches->count() > 1) {
+            $this->error("Branch \"{$branchName}\" exists in several organisations -- pass --company=<id|slug>.");
+            return self::FAILURE;
+        }
+
+        $branch = $branches->first();
+
+        // Everything below (employee-code lookups included) is confined to that organisation.
+        return app(\App\Support\Tenancy\TenantContext::class)->runAs(
+            $branch->company_id,
+            fn () => $this->import($branch, $rows)
+        );
+    }
+
+    private function import(Branch $branch, array $rows): int
+    {
+
         $dryRun = (bool) $this->option('dry-run');
         $placeholderJoinDate = '2024-01-01';
 
-        $basicSalary = SalaryComponent::withoutGlobalScopes()->firstOrCreate(
+        $basicSalary = SalaryComponent::withoutGlobalScope(BranchScope::class)->firstOrCreate(
             ['branch_id' => $branch->id, 'name' => 'Basic Salary'],
             ['type' => 'earning', 'calculation_type' => 'fixed']
         );
@@ -70,16 +95,16 @@ class ImportStaffFromJson extends Command
             $deptName = $row['department'];
             $designationTitle = $row['designation'];
 
-            $department = Department::withoutGlobalScopes()->firstOrCreate(
+            $department = Department::withoutGlobalScope(BranchScope::class)->firstOrCreate(
                 ['branch_id' => $branch->id, 'name' => $deptName]
             );
 
-            $designation = Designation::withoutGlobalScopes()->firstOrCreate(
+            $designation = Designation::withoutGlobalScope(BranchScope::class)->firstOrCreate(
                 ['branch_id' => $branch->id, 'department_id' => $department->id, 'title' => $designationTitle]
             );
 
             $fullName = trim($row['first_name'].' '.$row['last_name']);
-            $employee = Employee::withoutGlobalScopes()->where('employee_code', $row['employee_code'])->first();
+            $employee = Employee::withoutGlobalScope(BranchScope::class)->where('employee_code', $row['employee_code'])->first();
 
             if ($employee && $employee->user_id) {
                 $skipped++;

@@ -2,16 +2,19 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCompany;
+use App\Models\Concerns\VisibleThroughEmployee;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class AttendanceRegularization extends Model
 {
-    use HasFactory;
+    use BelongsToCompany, VisibleThroughEmployee, HasFactory;
 
     protected $fillable = [
         'attendance_id',
         'employee_id',
+        'date',
         'requested_check_in',
         'requested_check_out',
         'reason',
@@ -22,6 +25,7 @@ class AttendanceRegularization extends Model
     protected function casts(): array
     {
         return [
+            'date' => 'date',
             'requested_check_in' => 'datetime',
             'requested_check_out' => 'datetime',
         ];
@@ -52,13 +56,14 @@ class AttendanceRegularization extends Model
         return $this->morphMany(ApprovalAction::class, 'requestable');
     }
 
+    /**
+     * Approved: the requested times become punches (source "regularization")
+     * and the day is reprocessed, so status, hours and lateness all follow
+     * from the corrected times -- instead of patching two columns and leaving
+     * an "absent" status behind.
+     */
     public function onApproved(): void
     {
-        if ($this->attendance) {
-            $this->attendance->update([
-                'check_in' => $this->requested_check_in ?? $this->attendance->check_in,
-                'check_out' => $this->requested_check_out ?? $this->attendance->check_out,
-            ]);
-        }
+        app(\App\Services\Attendance\RegularizationApplier::class)->apply($this);
     }
 }

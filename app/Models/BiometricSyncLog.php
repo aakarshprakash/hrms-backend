@@ -2,10 +2,13 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCompany;
 use Illuminate\Database\Eloquent\Model;
 
 class BiometricSyncLog extends Model
 {
+    use BelongsToCompany;
+
     protected $fillable = [
         'branch_id',
         'triggered_by',

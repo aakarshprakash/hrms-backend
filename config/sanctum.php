@@ -50,7 +50,9 @@ return [
     |
     */
 
-    'expiration' => null,
+    // Default 7 days: long enough that staff using the punch PWA aren't signed
+    // out daily, short enough that a leaked token doesn't live forever.
+    'expiration' => env('SANCTUM_EXPIRATION', 60 * 24 * 7),
 
     /*
     |--------------------------------------------------------------------------

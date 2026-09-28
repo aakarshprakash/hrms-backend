@@ -2,12 +2,20 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\Audited;
+use App\Models\Concerns\BelongsToCompany;
+use App\Models\Concerns\VisibleThroughEmployee;
+use App\Services\Leave\LeaveRequestService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class Leave extends Model
 {
-    use HasFactory;
+    use Audited, BelongsToCompany, VisibleThroughEmployee, HasFactory;
+
+    public const SESSIONS = ['first_half', 'second_half'];
+
+    protected string $auditLog = 'leave';
 
     protected $fillable = [
         'employee_id',
@@ -16,17 +24,34 @@ class Leave extends Model
         'start_date',
         'end_date',
         'days',
+        'half_day_session',
+        'leave_year',
         'reason',
+        'attachment_path',
         'status',
+        'applied_by',
+        'cancelled_at',
+        'cancelled_by',
+        'cancellation_reason',
     ];
+
+    protected $hidden = ['attachment_path'];
+
+    protected $appends = ['has_attachment'];
 
     protected function casts(): array
     {
         return [
-            'start_date' => 'date',
-            'end_date' => 'date',
+            'start_date' => 'date:Y-m-d',
+            'end_date' => 'date:Y-m-d',
             'days' => 'decimal:2',
+            'cancelled_at' => 'datetime',
         ];
+    }
+
+    public function getHasAttachmentAttribute(): bool
+    {
+        return ! empty($this->attributes['attachment_path'] ?? null);
     }
 
     public function employee()
@@ -44,6 +69,17 @@ class Leave extends Model
         return $this->belongsTo(Attendance::class, 'source_attendance_id');
     }
 
+    /** HR / approver who recorded the leave on the employee's behalf. */
+    public function recorder()
+    {
+        return $this->belongsTo(User::class, 'applied_by');
+    }
+
+    public function canceller()
+    {
+        return $this->belongsTo(User::class, 'cancelled_by');
+    }
+
     public function approvalActions()
     {
         return $this->morphMany(ApprovalAction::class, 'requestable');
@@ -59,25 +95,14 @@ class Leave extends Model
         return $query->where('status', 'approved');
     }
 
+    /** Called by the approval workflow once the last step approves. */
     public function onApproved(): void
     {
-        $balance = LeaveBalance::where('employee_id', $this->employee_id)
-            ->where('leave_type_id', $this->leave_type_id)
-            ->where('year', $this->start_date->year)
-            ->first();
-
-        if ($balance) {
-            $balance->increment('used', $this->days);
-            $balance->decrement('balance', $this->days);
-        }
-
-        if ($this->source_attendance_id) {
-            $this->sourceAttendance?->update(['status' => 'on_leave']);
-        }
+        app(LeaveRequestService::class)->applyApproval($this);
     }
 
     public function onRejected(): void
     {
-        // no-op
+        // Nothing was deducted while pending.
     }
 }

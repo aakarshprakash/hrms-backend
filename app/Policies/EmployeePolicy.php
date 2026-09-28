@@ -5,109 +5,89 @@ namespace App\Policies;
 use App\Models\Employee;
 use App\Models\User;
 
+/**
+ * Employee access = permission (what) x data scope (whose).
+ *
+ * Tenant admins pass every check via Gate::before; tenant isolation is
+ * guaranteed underneath by the tenant scope, so a policy only ever sees
+ * employees of the acting organisation.
+ */
 class EmployeePolicy
 {
     public function viewAny(User $user): bool
     {
-        return $user->hasAnyRole(['super_admin', 'branch_admin', 'hr', 'manager', 'employee'])
-            || $user->can('employees.view');
+        // Everyone may list; the listing itself is narrowed to their data scope.
+        return true;
     }
 
     public function view(User $user, Employee $employee): bool
     {
-        if ($user->is_super_admin || $user->hasRole('super_admin')) {
+        if ($user->employee_id === $employee->id) {
             return true;
         }
 
-        if ($user->hasAnyRole(['branch_admin', 'hr'])) {
-            return $user->branch_id === $employee->branch_id;
-        }
-
-        if ($user->hasRole('manager')) {
-            // Manager can see their own employee record and direct reports
-            if ($user->employee_id === $employee->id) {
-                return true;
-            }
-            return $employee->reporting_manager_id === $user->employee_id;
-        }
-
-        if ($user->hasRole('employee')) {
-            return $user->employee_id === $employee->id;
-        }
-
-        // Custom roles: branch-scoped view permission
-        if ($user->can('employees.view')) {
-            return $user->branch_id === null || $user->branch_id === $employee->branch_id;
-        }
-
-        return false;
+        return $user->can('employees.view') && $this->inScope($user, $employee);
     }
 
     public function create(User $user): bool
     {
-        return $user->hasAnyRole(['super_admin', 'branch_admin', 'hr'])
-            || $user->can('employees.manage');
+        return $user->can('employees.manage');
     }
 
     public function update(User $user, Employee $employee): bool
     {
-        if ($user->is_super_admin || $user->hasRole('super_admin')) {
-            return true;
-        }
+        return $user->can('employees.manage') && $this->inScope($user, $employee);
+    }
 
-        if ($user->hasAnyRole(['branch_admin', 'hr'])) {
-            return $user->branch_id === $employee->branch_id;
-        }
-
-        if ($user->hasRole('manager')) {
-            return $employee->reporting_manager_id === $user->employee_id;
-        }
-
-        // Custom roles: branch-scoped manage permission
-        if ($user->can('employees.manage')) {
-            return $user->branch_id === null || $user->branch_id === $employee->branch_id;
-        }
-
-        return false;
+    /** Own avatar is always editable; anyone else's needs employees.manage. */
+    public function updateAvatar(User $user, Employee $employee): bool
+    {
+        return $user->employee_id === $employee->id || $this->update($user, $employee);
     }
 
     public function delete(User $user, Employee $employee): bool
     {
-        if ($user->is_super_admin || $user->hasRole('super_admin')) {
-            return true;
-        }
-
-        return $user->hasRole('branch_admin') && $user->branch_id === $employee->branch_id;
+        return $user->employee_id !== $employee->id
+            && $user->can('employees.manage')
+            && $this->inScope($user, $employee);
     }
 
     /**
-     * Salary is sensitive: HR/branch admin can see it for their own branch,
-     * and employees can always see their own — but a manager or coworker
-     * viewing someone else's profile should not.
+     * Bank, PAN, Aadhaar and similar. Employees always see their own;
+     * otherwise it takes the dedicated employees.sensitive permission.
      */
-    public function viewSalary(User $user, Employee $employee): bool
+    public function viewSensitive(User $user, Employee $employee): bool
     {
-        if ($user->is_super_admin || $user->hasRole('super_admin')) {
+        if ($user->employee_id === $employee->id) {
             return true;
         }
 
-        if ($user->hasAnyRole(['branch_admin', 'hr']) || $user->can('payroll.view')) {
-            return $user->branch_id === null || $user->branch_id === $employee->branch_id;
+        return $user->can('employees.sensitive') && $this->inScope($user, $employee);
+    }
+
+    /**
+     * Salary is sensitive: payroll viewers can see it within their scope,
+     * employees can always see their own -- a manager or coworker viewing
+     * someone else's profile cannot.
+     */
+    public function viewSalary(User $user, Employee $employee): bool
+    {
+        if ($user->employee_id === $employee->id) {
+            return true;
         }
 
-        return $user->employee_id === $employee->id;
+        return ($user->can('payroll.view') || $user->can('payroll.manage')) && $this->inScope($user, $employee);
     }
 
     public function manageSalary(User $user, Employee $employee): bool
     {
-        if ($user->is_super_admin || $user->hasRole('super_admin')) {
-            return true;
-        }
+        return $user->can('payroll.manage')
+            && $user->employee_id !== $employee->id
+            && $this->inScope($user, $employee);
+    }
 
-        if ($user->hasAnyRole(['branch_admin', 'hr']) || $user->can('payroll.manage')) {
-            return $user->branch_id === null || $user->branch_id === $employee->branch_id;
-        }
-
-        return false;
+    private function inScope(User $user, Employee $employee): bool
+    {
+        return $user->canAccessBranch($employee->branch_id) && $employee->isVisibleTo($user);
     }
 }

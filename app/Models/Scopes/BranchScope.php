@@ -2,38 +2,32 @@
 
 namespace App\Models\Scopes;
 
+use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Scope;
 use Illuminate\Support\Facades\Auth;
 
+/**
+ * Within a tenant, confines branch-owned records to the branches the
+ * signed-in user may access. Company-wide users (tenant/platform admins)
+ * and unassigned users are not restricted; tenant isolation itself is
+ * TenantScope's job, not this one's.
+ */
 class BranchScope implements Scope
 {
     public function apply(Builder $builder, Model $model): void
     {
         $user = Auth::user();
 
-        if (! $user) {
+        if (! $user instanceof User) {
             return;
         }
 
-        // Super admins bypass branch filtering
-        if ($user->is_super_admin) {
-            return;
-        }
+        $branchIds = $user->accessibleBranchIds();
 
-        // Users with HQ/all-branch access bypass filtering
-        if ($user->hasRole('super_admin')) {
-            return;
-        }
-
-        // Filter by the user's accessible branch(es)
-        $branchIds = $user->accessible_branch_ids ?? [];
-
-        if (! empty($branchIds)) {
-            $builder->whereIn($model->getTable() . '.branch_id', $branchIds);
-        } elseif ($user->branch_id) {
-            $builder->where($model->getTable() . '.branch_id', $user->branch_id);
+        if ($branchIds !== null) {
+            $builder->whereIn($model->qualifyColumn('branch_id'), $branchIds);
         }
     }
 }

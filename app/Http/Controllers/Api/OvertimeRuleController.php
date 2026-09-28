@@ -24,6 +24,9 @@ class OvertimeRuleController extends Controller
             'rate_multiplier' => 'nullable|numeric|min:1',
         ]);
 
+        $this->authorizeBranch((int) $validated['branch_id']);
+
+
         $rule = OvertimeRule::create($validated);
 
         return response()->json(['data' => $rule, 'message' => 'Overtime rule created.'], 201);
@@ -41,6 +44,13 @@ class OvertimeRuleController extends Controller
             'weekly_threshold_hours' => 'nullable|numeric|min:0',
             'rate_multiplier' => 'nullable|numeric|min:1',
         ]);
+
+        if (($newBranch = ($validated['branch_id'] ?? null)) !== null) {
+
+            $this->authorizeBranch((int) $newBranch);
+
+        }
+
 
         $overtimeRule->update($validated);
 

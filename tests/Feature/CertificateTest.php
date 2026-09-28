@@ -34,7 +34,6 @@ class CertificateTest extends TestCase
 
         Role::firstOrCreate(['name' => 'hr', 'guard_name' => 'web']);
         Role::firstOrCreate(['name' => 'employee', 'guard_name' => 'web']);
-        Role::firstOrCreate(['name' => 'super_admin', 'guard_name' => 'web']);
 
         $this->company = Company::factory()->create();
         $this->branch  = Branch::factory()->create(['company_id' => $this->company->id]);
@@ -200,7 +199,7 @@ class CertificateTest extends TestCase
         $response = $this->getJson('/api/certificate-templates');
         $response->assertStatus(200);
 
-        $templates = $response->json();
+        $templates = $response->json('data');
         $this->assertEmpty($templates, 'Branch 2 user should not see Branch 1 templates');
     }
 }

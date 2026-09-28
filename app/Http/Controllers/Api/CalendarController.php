@@ -23,7 +23,7 @@ class CalendarController extends Controller
     {
         $month = $request->integer('month') ?: now()->month;
         $year = $request->integer('year') ?: now()->year;
-        $branchId = $request->filled('branch_id') ? $request->integer('branch_id') : null;
+        $branchId = $this->requestedBranchId();
 
         $monthStart = Carbon::create($year, $month, 1)->startOfDay();
         $monthEnd = $monthStart->copy()->endOfMonth();
@@ -42,7 +42,8 @@ class CalendarController extends Controller
         $leaves = Leave::where('status', 'approved')
             ->whereDate('start_date', '<=', $monthEnd)
             ->whereDate('end_date', '>=', $monthStart)
-            ->when($branchId, fn ($q) => $q->whereHas('employee', fn ($e) => $e->where('branch_id', $branchId)))
+            // whereHas applies Employee's branch scope, keeping other branches' leave out.
+            ->whereHas('employee', fn ($e) => $e->when($branchId, fn ($q) => $q->where('branch_id', $branchId)))
             ->with('employee:id,first_name,last_name')
             ->get();
 
@@ -153,7 +154,8 @@ class CalendarController extends Controller
         $onLeaveToday = Leave::where('status', 'approved')
             ->whereDate('start_date', '<=', $today)
             ->whereDate('end_date', '>=', $today)
-            ->when($branchId, fn ($q) => $q->whereHas('employee', fn ($e) => $e->where('branch_id', $branchId)))
+            // whereHas applies Employee's branch scope, keeping other branches' leave out.
+            ->whereHas('employee', fn ($e) => $e->when($branchId, fn ($q) => $q->where('branch_id', $branchId)))
             ->with('employee:id,first_name,last_name')
             ->get()
             ->map(fn ($l) => ['employee_id' => $l->employee?->id, 'name' => $l->employee ? trim("{$l->employee->first_name} {$l->employee->last_name}") : 'Unknown', 'end_date' => $l->end_date->toDateString()])

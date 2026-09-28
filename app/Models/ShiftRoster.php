@@ -2,13 +2,14 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCompany;
 use App\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class ShiftRoster extends Model
 {
-    use HasFactory, HasBranchScope;
+    use BelongsToCompany, HasFactory, HasBranchScope;
 
     protected $fillable = [
         'branch_id',
@@ -16,12 +17,15 @@ class ShiftRoster extends Model
         'employee_id',
         'shift_id',
         'date',
+        'is_off',
+        'note',
     ];
 
     protected function casts(): array
     {
         return [
             'date' => 'date',
+            'is_off' => 'boolean',
         ];
     }
 

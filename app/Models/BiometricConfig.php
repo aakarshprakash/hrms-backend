@@ -2,10 +2,19 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\Audited;
+use App\Models\Concerns\BelongsToCompany;
 use Illuminate\Database\Eloquent\Model;
 
 class BiometricConfig extends Model
 {
+    use Audited, BelongsToCompany;
+
+    protected string $auditLog = 'settings';
+
+    /** Never written to the audit log; only noted as changed. */
+    public const SENSITIVE = ['api_token'];
+
     protected $fillable = [
         'branch_id',
         'api_url',

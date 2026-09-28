@@ -13,7 +13,8 @@ class DepartmentController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = Department::with(['branch', 'parentDepartment']);
+        $query = Department::with(['branch', 'parentDepartment'])
+            ->withCount(['designations', 'employees' => fn ($q) => $q->where('status', 'active')]);
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->integer('branch_id'));
@@ -27,6 +28,8 @@ class DepartmentController extends Controller
 
     public function store(StoreDepartmentRequest $request): JsonResponse
     {
+        $this->authorizeBranch((int) $request->validated('branch_id'));
+
         $department = Department::create($request->validated());
 
         return response()->json([
@@ -47,6 +50,10 @@ class DepartmentController extends Controller
 
     public function update(UpdateDepartmentRequest $request, Department $department): JsonResponse
     {
+        if (($newBranch = $request->validated('branch_id')) !== null) {
+            $this->authorizeBranch((int) $newBranch);
+        }
+
         $department->update($request->validated());
 
         return response()->json([

@@ -2,12 +2,14 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCompany;
+use App\Models\Concerns\VisibleThroughEmployee;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class EmployeeShift extends Model
 {
-    use HasFactory;
+    use BelongsToCompany, VisibleThroughEmployee, HasFactory;
 
     protected $fillable = [
         'employee_id',

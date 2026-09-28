@@ -2,7 +2,11 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\Audited;
+use App\Models\Concerns\BelongsToCompany;
+use App\Support\Access\Roles;
 use App\Traits\HasBranchScope;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Spatie\MediaLibrary\HasMedia;
@@ -10,7 +14,9 @@ use Spatie\MediaLibrary\InteractsWithMedia;
 
 class Employee extends Model implements HasMedia
 {
-    use HasFactory, HasBranchScope, InteractsWithMedia;
+    use Audited, BelongsToCompany, HasFactory, HasBranchScope, InteractsWithMedia;
+
+    protected string $auditLog = 'employee';
 
     protected $fillable = [
         'branch_id',
@@ -54,9 +60,23 @@ class Employee extends Model implements HasMedia
         'notice_period_days',
         'work_location',
         'notes',
+        'weekly_off_days',
+        'uan',
+        'pf_number',
+        'esi_number',
+        'pf_opted_out',
+        'pt_exempt',
+        'tax_regime',
+        'declared_deductions',
     ];
 
     protected $appends = ['avatar_url', 'full_name'];
+
+    /**
+     * Encrypted at rest and masked in API responses unless the viewer may
+     * see them (EmployeePolicy::viewSensitive).
+     */
+    public const SENSITIVE = ['national_id', 'tax_id', 'bank_account_number'];
 
     protected function casts(): array
     {
@@ -65,7 +85,31 @@ class Employee extends Model implements HasMedia
             'date_of_joining' => 'date',
             'probation_end_date' => 'date',
             'date_of_leaving' => 'date',
+            'national_id' => 'encrypted',
+            'tax_id' => 'encrypted',
+            'bank_account_number' => 'encrypted',
+            'weekly_off_days' => 'array',
+            'pf_opted_out' => 'boolean',
+            'pt_exempt' => 'boolean',
+            'declared_deductions' => 'decimal:2',
         ];
+    }
+
+    /** Replace sensitive values with masked forms (e.g. XXXXXXXX1234) for display. */
+    public function maskSensitive(): static
+    {
+        foreach (self::SENSITIVE as $field) {
+            $value = $this->getAttribute($field);
+
+            if ($value !== null && $value !== '') {
+                $plain = preg_replace('/\s+/', '', (string) $value);
+                $this->setAttribute($field, str_repeat('X', max(0, strlen($plain) - 4)) . substr($plain, -4));
+            }
+        }
+
+        $this->setAttribute('sensitive_masked', true);
+
+        return $this;
     }
 
     public function getAvatarUrlAttribute(): ?string
@@ -77,7 +121,9 @@ class Employee extends Model implements HasMedia
 
     public function registerMediaCollections(): void
     {
+        // Private disk: served only through the authorized download endpoint.
         $this->addMediaCollection('documents')
+            ->useDisk('local')
             ->acceptsMimeTypes([
                 'application/pdf',
                 'image/jpeg',
@@ -94,6 +140,25 @@ class Employee extends Model implements HasMedia
     public function getFullNameAttribute(): string
     {
         return trim("{$this->first_name} {$this->last_name}");
+    }
+
+    /**
+     * Employees $user may see, per their data scope. Branch confinement for
+     * branch-scoped users is already applied by BranchScope; this adds the
+     * team / self narrowing on top.
+     */
+    public function scopeVisibleTo(Builder $query, User $user): Builder
+    {
+        return match ($user->dataScope()) {
+            Roles::SCOPE_COMPANY, Roles::SCOPE_BRANCH => $query,
+            Roles::SCOPE_TEAM => $query->whereIn('employees.id', $user->teamEmployeeIds() ?: [0]),
+            default => $query->where('employees.id', $user->employee_id ?? 0),
+        };
+    }
+
+    public function isVisibleTo(User $user): bool
+    {
+        return static::query()->visibleTo($user)->whereKey($this->getKey())->exists();
     }
 
     public function user()

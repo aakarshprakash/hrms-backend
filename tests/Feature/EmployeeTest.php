@@ -7,7 +7,6 @@ use App\Models\Company;
 use App\Models\Employee;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Spatie\Permission\Models\Role;
 use Tests\TestCase;
 
 class EmployeeTest extends TestCase
@@ -21,10 +20,6 @@ class EmployeeTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-
-        foreach (['super_admin', 'branch_admin', 'hr', 'manager', 'employee'] as $role) {
-            Role::create(['name' => $role, 'guard_name' => 'web']);
-        }
 
         $this->company = Company::create(['name' => 'Test Corp', 'timezone' => 'UTC']);
 
@@ -54,7 +49,7 @@ class EmployeeTest extends TestCase
             'name' => ucfirst($role) . $suffix,
             'email' => $email,
             'password' => bcrypt('password'),
-            'is_super_admin' => ($role === 'super_admin'),
+            'is_super_admin' => false,
             'branch_id' => $branchId,
         ]);
         $user->assignRole($role);
@@ -88,7 +83,7 @@ class EmployeeTest extends TestCase
 
     public function test_super_admin_can_list_all_employees_across_branches(): void
     {
-        ['user' => $superAdmin] = $this->createUserWithRole('super_admin');
+        ['user' => $superAdmin] = $this->createUserWithRole('tenant_admin', $this->branch1->id);
         $this->createBareEmployee($this->branch1->id, 'EMP-B1-A');
         $this->createBareEmployee($this->branch2->id, 'EMP-B2-A');
 
@@ -98,8 +93,8 @@ class EmployeeTest extends TestCase
 
         $response->assertStatus(200);
 
-        // Super admin sees all employees across both branches (including own)
-        $total = $response->json('data.total');
+        // The organisation's admin sees all employees across both branches (including own)
+        $total = $response->json('meta.total');
         $this->assertGreaterThanOrEqual(3, $total);
     }
 
@@ -115,7 +110,7 @@ class EmployeeTest extends TestCase
 
         $response->assertStatus(200);
 
-        $employees = $response->json('data.data');
+        $employees = $response->json('data');
         foreach ($employees as $emp) {
             $this->assertEquals($this->branch1->id, $emp['branch_id']);
         }

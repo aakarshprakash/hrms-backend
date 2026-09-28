@@ -17,9 +17,24 @@ Artisan::command('inspire', function () {
 // insurance now that schedule:run itself is expected to run every minute.
 $logPath = storage_path('logs/scheduler.log');
 
-// Schedule monthly leave balance accrual
+// Leave accrual by policy + year-end carry forward. Daily, because it is
+// idempotent (one credit per balance per period): a missed run is simply
+// caught up by the next one, and new joiners get balances the next day.
 Schedule::command('hrms:accrue-leave-balances')
-    ->monthlyOn(1, '00:00')
+    ->dailyAt('00:30')
+    ->withoutOverlapping()
+    ->appendOutputTo($logPath);
+
+// Subscriptions: trials ending, renewals with invoices, overdue payments.
+Schedule::command('billing:run')
+    ->dailyAt('01:00')
+    ->withoutOverlapping()
+    ->appendOutputTo($logPath);
+
+// Notification outbox: email / SMS / WhatsApp that wasn't sent right after
+// the request (provider down, process killed) is retried with backoff.
+Schedule::command('notifications:dispatch')
+    ->everyMinute()
     ->withoutOverlapping()
     ->appendOutputTo($logPath);
 

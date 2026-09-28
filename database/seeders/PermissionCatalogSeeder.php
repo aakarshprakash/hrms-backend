@@ -2,80 +2,47 @@
 
 namespace Database\Seeders;
 
+use App\Models\Role;
+use App\Support\Access\PermissionCatalog;
+use App\Support\Access\Roles;
 use Illuminate\Database\Seeder;
 use Spatie\Permission\Models\Permission;
-use Spatie\Permission\Models\Role;
 use Spatie\Permission\PermissionRegistrar;
 
 /**
- * The permission catalog that dynamic roles are built from. Grouped by module;
- * safe to re-run (idempotent). Super admin bypasses permissions entirely via
- * Gate::before, so it is not listed here.
+ * Ensures every built-in role and catalog permission exists. Idempotent and
+ * safe on every deploy: a built-in role only receives its default
+ * permissions when it is first created, so edits a tenant makes to a role's
+ * permissions are never reverted. (Permissions added in later releases are
+ * granted to existing roles by the migration that introduces them.)
  */
 class PermissionCatalogSeeder extends Seeder
 {
-    public const CATALOG = [
-        'Employees' => [
-            'employees.view' => 'View the employee directory and profiles',
-            'employees.manage' => 'Create, edit and terminate employees',
-        ],
-        'Attendance' => [
-            'attendance.view' => 'View team attendance records',
-            'attendance.manage' => 'Mark and correct attendance manually',
-        ],
-        'Leave' => [
-            'leaves.view' => 'View team leave requests',
-            'leaves.approve' => 'Approve or reject leave requests',
-        ],
-        'Shifts' => [
-            'shifts.manage' => 'Manage shifts, rosters and holidays',
-        ],
-        'Payroll' => [
-            'payroll.view' => 'View payroll summaries and payslips',
-            'payroll.manage' => 'Run payroll and manage salary structures',
-        ],
-        'Certificates' => [
-            'certificates.manage' => 'Manage certificate templates and requests',
-        ],
-        'Organisation' => [
-            'departments.manage' => 'Manage departments and designations',
-        ],
-        'Administration' => [
-            'users.manage' => 'Manage user accounts in own branch',
-            'insights.view' => 'View AI insights and analytics',
-            'settings.manage' => 'Manage branches and company settings',
-        ],
-    ];
+    /** @deprecated use PermissionCatalog::CATALOG */
+    public const CATALOG = PermissionCatalog::CATALOG;
 
-    public const ROLE_DEFAULTS = [
-        'branch_admin' => [
-            'employees.view', 'employees.manage', 'attendance.view', 'attendance.manage',
-            'leaves.view', 'leaves.approve', 'shifts.manage', 'payroll.view', 'payroll.manage',
-            'certificates.manage', 'departments.manage', 'users.manage', 'insights.view', 'settings.manage',
-        ],
-        'hr' => [
-            'employees.view', 'employees.manage', 'attendance.view', 'attendance.manage',
-            'leaves.view', 'leaves.approve', 'shifts.manage', 'payroll.view',
-            'certificates.manage', 'departments.manage', 'insights.view',
-        ],
-        'manager' => [
-            'employees.view', 'attendance.view', 'attendance.manage', 'leaves.view', 'leaves.approve', 'insights.view',
-        ],
-        'employee' => [],
-    ];
+    /** @deprecated use PermissionCatalog::ROLE_DEFAULTS */
+    public const ROLE_DEFAULTS = PermissionCatalog::ROLE_DEFAULTS;
 
     public function run(): void
     {
-        foreach (self::CATALOG as $group => $permissions) {
-            foreach ($permissions as $name => $description) {
-                Permission::firstOrCreate(['name' => $name, 'guard_name' => 'web']);
-            }
+        foreach (PermissionCatalog::all() as $name) {
+            Permission::firstOrCreate(['name' => $name, 'guard_name' => 'web']);
         }
 
-        foreach (self::ROLE_DEFAULTS as $roleName => $permissions) {
-            $role = Role::where('name', $roleName)->first();
-            if ($role) {
-                $role->syncPermissions($permissions);
+        foreach (Roles::SYSTEM as $name => [$display, $scope, $description]) {
+            $role = Role::firstOrCreate(['name' => $name, 'guard_name' => 'web']);
+
+            $role->forceFill([
+                'display_name' => $display,
+                'description' => $description,
+                'data_scope' => $scope,
+                'is_system' => true,
+                'company_id' => null,
+            ])->save();
+
+            if ($role->wasRecentlyCreated && isset(PermissionCatalog::ROLE_DEFAULTS[$name])) {
+                $role->syncPermissions(PermissionCatalog::ROLE_DEFAULTS[$name]);
             }
         }
 
