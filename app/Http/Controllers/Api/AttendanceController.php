@@ -18,6 +18,37 @@ use Illuminate\Support\Facades\DB;
 
 class AttendanceController extends Controller
 {
+    /** How long the mobile app may hold a punch taken offline before it syncs. */
+    private const OFFLINE_PUNCH_HOURS = 24;
+
+    private const STALE_PUNCH_MESSAGE = 'This punch was taken too long ago to record. Ask for an attendance correction instead.';
+
+    /**
+     * When the punch happened. The mobile app sends `captured_at` for a punch
+     * it had to queue offline; it counts from that moment (within a day, never
+     * in the future) and is marked so HR can see it arrived late.
+     *
+     * @return array{0: ?CarbonImmutable, 1: ?array}
+     */
+    private function punchInstant(?string $capturedAt): array
+    {
+        $now = CarbonImmutable::now('UTC');
+        if (! $capturedAt) {
+            return [$now, null];
+        }
+
+        $at = CarbonImmutable::parse($capturedAt)->utc();
+        if ($at->gt($now->addMinutes(2)) || $at->lt($now->subHours(self::OFFLINE_PUNCH_HOURS))) {
+            return [null, null];
+        }
+        // Within a minute of now it's an ordinary live punch.
+        if (abs($now->diffInSeconds($at)) <= 60) {
+            return [$now, null];
+        }
+
+        return [$at, ['captured_offline' => true, 'captured_at' => $at->toIso8601String(), 'received_at' => $now->toIso8601String()]];
+    }
+
     /**
      * Self-service punch in. Recorded as a raw punch (web / mobile / kiosk)
      * and processed through the same pipeline as device punches.
@@ -34,9 +65,13 @@ class AttendanceController extends Controller
             'source' => ['nullable', 'in:web,mobile,kiosk'],
             'latitude' => ['nullable', 'numeric', 'between:-90,90'],
             'longitude' => ['nullable', 'numeric', 'between:-180,180'],
+            'captured_at' => ['nullable', 'date'],
         ]);
 
-        $now = CarbonImmutable::now('UTC');
+        [$now, $offline] = $this->punchInstant($validated['captured_at'] ?? null);
+        if ($now === null) {
+            return response()->json(['message' => self::STALE_PUNCH_MESSAGE], 422);
+        }
         $date = $processor->dayFor($employee, $now);
         $attendance = Attendance::where('employee_id', $employee->id)->whereDate('date', $date)->first();
 
@@ -52,6 +87,7 @@ class AttendanceController extends Controller
             'latitude' => $validated['latitude'] ?? null,
             'longitude' => $validated['longitude'] ?? null,
             'ip_address' => $request->ip(),
+            'payload' => $offline,
         ]);
         $processor->processEmployee($employee, $date, $date);
 
@@ -84,9 +120,13 @@ class AttendanceController extends Controller
             'source' => ['nullable', 'in:web,mobile,kiosk'],
             'latitude' => ['nullable', 'numeric', 'between:-90,90'],
             'longitude' => ['nullable', 'numeric', 'between:-180,180'],
+            'captured_at' => ['nullable', 'date'],
         ]);
 
-        $now = CarbonImmutable::now('UTC');
+        [$now, $offline] = $this->punchInstant($validated['captured_at'] ?? null);
+        if ($now === null) {
+            return response()->json(['message' => self::STALE_PUNCH_MESSAGE], 422);
+        }
         $date = $processor->dayFor($employee, $now);
         $attendance = Attendance::where('employee_id', $employee->id)->whereDate('date', $date)->first();
 
@@ -98,11 +138,17 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Already checked out today.'], 422);
         }
 
+        // The processor reads an out-punch this close to the in-punch as a double tap.
+        if ($attendance->check_in && $now->lt(CarbonImmutable::instance($attendance->check_in)->addMinutes(2))) {
+            return response()->json(['message' => 'You checked in less than 2 minutes ago. Wait a moment before checking out.'], 422);
+        }
+
         $recorder->recordForEmployee($employee, $validated['source'] ?? 'web', $now, [
             'direction' => 'out',
             'latitude' => $validated['latitude'] ?? null,
             'longitude' => $validated['longitude'] ?? null,
             'ip_address' => $request->ip(),
+            'payload' => $offline,
         ]);
         $processor->processEmployee($employee, $date, $date);
 

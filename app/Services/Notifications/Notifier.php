@@ -3,6 +3,7 @@
 namespace App\Services\Notifications;
 
 use App\Models\Company;
+use App\Models\DeviceToken;
 use App\Models\Employee;
 use App\Models\NotificationLog;
 use App\Models\NotificationSetting;
@@ -14,6 +15,7 @@ use App\Support\Notifications\NotificationEvents;
 use App\Support\Notifications\NotificationMessage;
 use App\Support\Phone;
 use App\Support\Tenancy\TenantContext;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 use function Illuminate\Support\defer;
@@ -35,7 +37,7 @@ class Notifier
     /** @var array<int, NotificationSetting> */
     private array $settings = [];
 
-    public function __construct(private NotificationDispatcher $dispatcher)
+    public function __construct(private NotificationDispatcher $dispatcher, private ExpoPush $push)
     {
     }
 
@@ -50,9 +52,10 @@ class Notifier
 
         DB::afterCommit(function () use ($users, $message) {
             $queued = [];
+            $devices = collect();
             foreach ($users as $user) {
                 try {
-                    array_push($queued, ...$this->deliverTo($user, $message));
+                    array_push($queued, ...$this->deliverTo($user, $message, $devices));
                 } catch (\Throwable $e) {
                     report($e);
                 }
@@ -61,11 +64,17 @@ class Notifier
             if ($queued) {
                 defer(fn () => $this->dispatcher->deliverIds($queued));
             }
+            if ($devices->isNotEmpty()) {
+                defer(fn () => $this->push->send($devices, $message));
+            }
         });
     }
 
-    /** @return list<int> outbox ids queued for external channels */
-    private function deliverTo(User $user, NotificationMessage $message): array
+    /**
+     * @param  Collection<int, DeviceToken>  $devices  collects the phones to push to
+     * @return list<int> outbox ids queued for external channels
+     */
+    private function deliverTo(User $user, NotificationMessage $message, Collection $devices): array
     {
         if (! $user->company_id || $user->is_active === false) {
             return [];
@@ -77,6 +86,11 @@ class Notifier
 
         if (in_array('in_app', $channels, true)) {
             $user->notify(new InAppNotification($message));
+
+            // The mobile app mirrors the bell as push notifications, unless the person opted out.
+            if (($preferences['push'] ?? true) !== false) {
+                $devices->push(...DeviceToken::where('user_id', $user->id)->get()->all());
+            }
         }
 
         $ids = [];

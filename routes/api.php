@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\CertificateTokenController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\DepartmentController;
 use App\Http\Controllers\Api\DesignationController;
+use App\Http\Controllers\Api\DeviceTokenController;
 use App\Http\Controllers\Api\DocumentController;
 use App\Http\Controllers\Api\EmployeeController;
 use App\Http\Controllers\Api\ApprovalController;
@@ -332,6 +333,8 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
     Route::post('notifications/read-all', [NotificationController::class, 'markAllRead']);
     Route::post('notifications/{id}/read', [NotificationController::class, 'markRead']);
     Route::get('me/home', [EmployeeHomeController::class, 'show']);
+    Route::post('me/devices', [DeviceTokenController::class, 'store'])->middleware('throttle:20,1');
+    Route::delete('me/devices', [DeviceTokenController::class, 'destroy']);
     Route::put('me/profile', [MyProfileController::class, 'update']);
     Route::get('me/notification-preferences', [NotificationController::class, 'preferences']);
     Route::put('me/notification-preferences', [NotificationController::class, 'updatePreferences']);

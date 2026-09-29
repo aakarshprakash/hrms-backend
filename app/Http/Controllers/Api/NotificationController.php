@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\DeviceToken;
 use App\Models\NotificationSetting;
 use App\Support\Notifications\NotificationEvents;
 use Illuminate\Http\JsonResponse;
@@ -67,11 +68,20 @@ class NotificationController extends Controller
         $settings = $user->company_id ? NotificationSetting::for($user->company_id) : null;
         $prefs = (array) ($user->notification_preferences ?? []);
 
-        return response()->json(['data' => collect(NotificationEvents::EXTERNAL)->map(fn ($channel) => [
+        $channels = collect(NotificationEvents::EXTERNAL)->map(fn ($channel) => [
             'channel' => $channel,
             'available' => (bool) $settings?->channelEnabled($channel),
             'enabled' => ($prefs[$channel] ?? true) !== false,
-        ])->values(), 'phone' => $user->phone, 'profile_phone' => $user->employee_id
+        ]);
+
+        // Push to the mobile app: offered once the person has signed in on a phone.
+        $channels->push([
+            'channel' => 'push',
+            'available' => DeviceToken::where('user_id', $user->id)->exists(),
+            'enabled' => ($prefs['push'] ?? true) !== false,
+        ]);
+
+        return response()->json(['data' => $channels->values(), 'phone' => $user->phone, 'profile_phone' => $user->employee_id
             ? \App\Models\Employee::withoutGlobalScope(\App\Models\Scopes\BranchScope::class)->whereKey($user->employee_id)->value('phone')
             : null]);
     }
@@ -82,11 +92,12 @@ class NotificationController extends Controller
             'email' => 'sometimes|boolean',
             'sms' => 'sometimes|boolean',
             'whatsapp' => 'sometimes|boolean',
+            'push' => 'sometimes|boolean',
             'phone' => ['sometimes', 'nullable', 'string', 'max:20', 'regex:/^[+0-9 ()-]{8,20}$/'],
         ]);
 
         $user = $request->user();
-        $prefs = array_merge((array) ($user->notification_preferences ?? []), array_intersect_key($validated, array_flip(NotificationEvents::EXTERNAL)));
+        $prefs = array_merge((array) ($user->notification_preferences ?? []), array_intersect_key($validated, array_flip([...NotificationEvents::EXTERNAL, 'push'])));
         $user->notification_preferences = $prefs;
         if (array_key_exists('phone', $validated)) {
             $user->phone = $validated['phone'];
