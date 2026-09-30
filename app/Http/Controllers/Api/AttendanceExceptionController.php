@@ -12,20 +12,14 @@ class AttendanceExceptionController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
-        abort_unless(
-            $user->is_super_admin || $user->hasAnyRole(['super_admin', 'branch_admin', 'hr', 'manager']) || $user->can('attendance.view'),
-            403,
-            'You are not allowed to view attendance exceptions.'
-        );
-
-        $branchId = $request->filled('branch_id') ? $request->integer('branch_id') : null;
+        $branchId = $this->requestedBranchId();
         $lookbackDays = $request->integer('days') ?: 14;
         $today = Carbon::today();
         $windowStart = $today->copy()->subDays($lookbackDays);
 
         $scopeBranch = fn ($q) => $branchId
-            ? $q->whereHas('employee', fn ($e) => $e->where('branch_id', $branchId))
-            : $q;
+            ? $q->visibleTo($user)->whereHas('employee', fn ($e) => $e->where('branch_id', $branchId))
+            : $q->visibleTo($user);
 
         // Missed checkouts: checked in on a past day but never checked out.
         $missedCheckouts = $scopeBranch(Attendance::whereNotNull('check_in')

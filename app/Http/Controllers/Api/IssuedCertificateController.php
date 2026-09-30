@@ -14,7 +14,7 @@ class IssuedCertificateController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = IssuedCertificate::with(['employee', 'templateVersion']);
+        $query = IssuedCertificate::with(['employee', 'templateVersion'])->visibleTo($request->user());
 
         if ($request->filled('employee_id')) {
             $query->where('employee_id', $request->integer('employee_id'));
@@ -25,13 +25,20 @@ class IssuedCertificateController extends Controller
 
     public function show(IssuedCertificate $certificate): JsonResponse
     {
+        $this->authorizeEmployeeVisible($certificate->employee_id);
+
         return response()->json(['data' => $certificate->load(['employee', 'templateVersion', 'request'])]);
     }
 
     public function pdf(IssuedCertificate $certificate): Response
     {
-        if ($certificate->pdf_path && Storage::disk('public')->exists($certificate->pdf_path)) {
-            $contents = Storage::disk('public')->get($certificate->pdf_path);
+        $this->authorizeEmployeeVisible($certificate->employee_id);
+
+        // Private storage; older certificates may still sit on the public disk.
+        $disk = collect(['local', 'public'])->first(fn ($d) => $certificate->pdf_path && Storage::disk($d)->exists($certificate->pdf_path));
+
+        if ($disk) {
+            $contents = Storage::disk($disk)->get($certificate->pdf_path);
             return response($contents, 200, [
                 'Content-Type'        => 'application/pdf',
                 'Content-Disposition' => 'inline; filename="' . $certificate->certificate_number . '.pdf"',
@@ -40,8 +47,8 @@ class IssuedCertificateController extends Controller
 
         // Regenerate if missing
         $pdf      = Pdf::loadHtml($certificate->resolved_html)->setPaper('a4', 'portrait');
-        $filename = 'certificates/' . $certificate->certificate_number . '.pdf';
-        Storage::disk('public')->put($filename, $pdf->output());
+        $filename = \App\Support\Tenancy\TenantStorage::path($certificate->company_id, 'certificates/' . $certificate->certificate_number . '.pdf');
+        Storage::disk('local')->put($filename, $pdf->output());
 
         $certificate->update(['pdf_path' => $filename]);
 

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Models\Scopes\BranchScope;
 use App\Http\Controllers\Controller;
 use App\Models\Employee;
 use App\Models\PayrollRun;
@@ -14,16 +15,27 @@ class PayrollAdjustmentController extends Controller
 {
     private function assertCanManageBranch(int $branchId): void
     {
-        $user = request()->user();
-        if ($user->is_super_admin || $user->hasRole('super_admin')) {
-            return;
+        // payroll.manage itself is enforced on the route.
+        $this->authorizeBranch($branchId, 'You are not allowed to manage payroll for this branch.');
+    }
+
+    private function assertEditable(PayrollRun $run): void
+    {
+        abort_unless($run->isEditable(), 422, 'Adjustments can only change before the payroll run is finalized.');
+    }
+
+    /** A processed run with changed inputs must be processed again before it can be finalized. */
+    private function markStale(PayrollRun $run): void
+    {
+        if ($run->status === 'processed') {
+            $run->forceFill(['status' => 'draft'])->save();
         }
-        abort_unless(
-            ($user->hasAnyRole(['branch_admin', 'hr']) || $user->can('payroll.manage'))
-                && ($user->branch_id === null || $user->branch_id === $branchId),
-            403,
-            'You are not allowed to manage payroll for this branch.'
-        );
+    }
+
+    private function assertComponentInBranch(int $componentId, PayrollRun $run): void
+    {
+        $branch = \App\Models\SalaryComponent::withoutGlobalScope(BranchScope::class)->whereKey($componentId)->value('branch_id');
+        abort_unless($branch === $run->branch_id, 422, "That pay component belongs to a different branch than this payroll run.");
     }
 
     public function index(PayrollRun $run): JsonResponse
@@ -40,7 +52,7 @@ class PayrollAdjustmentController extends Controller
     public function store(Request $request, PayrollRun $run): JsonResponse
     {
         $this->assertCanManageBranch($run->branch_id);
-        abort_unless($run->status === 'draft', 422, 'Adjustments can only be added while the payroll run is in draft.');
+        $this->assertEditable($run);
 
         $validated = $request->validate([
             'employee_id' => 'required|exists:employees,id',
@@ -49,14 +61,16 @@ class PayrollAdjustmentController extends Controller
             'note' => 'nullable|string|max:255',
         ]);
 
-        $employee = Employee::withoutGlobalScopes()->findOrFail($validated['employee_id']);
+        $employee = Employee::withoutGlobalScope(BranchScope::class)->findOrFail($validated['employee_id']);
         abort_unless($employee->branch_id === $run->branch_id, 422, "Employee does not belong to this payroll run's branch.");
+        $this->assertComponentInBranch((int) $validated['component_id'], $run);
 
         $adjustment = PayrollRunAdjustment::create([
             ...$validated,
             'payroll_run_id' => $run->id,
             'created_by' => $request->user()->id,
         ]);
+        $this->markStale($run);
 
         return response()->json([
             'data' => $adjustment->load(['employee', 'component']),
@@ -72,7 +86,7 @@ class PayrollAdjustmentController extends Controller
     public function bulkStore(Request $request, PayrollRun $run): JsonResponse
     {
         $this->assertCanManageBranch($run->branch_id);
-        abort_unless($run->status === 'draft', 422, 'Adjustments can only be added while the payroll run is in draft.');
+        $this->assertEditable($run);
 
         $validated = $request->validate([
             'component_id' => 'required|exists:salary_components,id',
@@ -84,13 +98,13 @@ class PayrollAdjustmentController extends Controller
         ]);
 
         if ($validated['apply_to_all'] ?? false) {
-            $employeeIds = Employee::withoutGlobalScopes()
+            $employeeIds = Employee::withoutGlobalScope(BranchScope::class)
                 ->where('branch_id', $run->branch_id)
                 ->where('status', 'active')
                 ->pluck('id');
         } else {
             $employeeIds = collect($validated['employee_ids'] ?? []);
-            $outOfBranch = Employee::withoutGlobalScopes()
+            $outOfBranch = Employee::withoutGlobalScope(BranchScope::class)
                 ->whereIn('id', $employeeIds)
                 ->where('branch_id', '!=', $run->branch_id)
                 ->exists();
@@ -98,6 +112,7 @@ class PayrollAdjustmentController extends Controller
         }
 
         abort_if($employeeIds->isEmpty(), 422, 'No employees selected.');
+        $this->assertComponentInBranch((int) $validated['component_id'], $run);
 
         $createdCount = DB::transaction(function () use ($employeeIds, $validated, $run, $request) {
             foreach ($employeeIds as $employeeId) {
@@ -112,6 +127,7 @@ class PayrollAdjustmentController extends Controller
             }
             return $employeeIds->count();
         });
+        $this->markStale($run);
 
         return response()->json([
             'message' => "Adjustment added for {$createdCount} employee" . ($createdCount === 1 ? '' : 's') . '.',
@@ -122,7 +138,7 @@ class PayrollAdjustmentController extends Controller
     {
         $run = $adjustment->payrollRun;
         $this->assertCanManageBranch($run->branch_id);
-        abort_unless($run->status === 'draft', 422, 'Adjustments can only be edited while the payroll run is in draft.');
+        $this->assertEditable($run);
 
         $validated = $request->validate([
             'component_id' => 'required|exists:salary_components,id',
@@ -130,7 +146,9 @@ class PayrollAdjustmentController extends Controller
             'note' => 'nullable|string|max:255',
         ]);
 
+        $this->assertComponentInBranch((int) $validated['component_id'], $run);
         $adjustment->update($validated);
+        $this->markStale($run);
 
         return response()->json([
             'data' => $adjustment->fresh(['employee', 'component']),
@@ -142,9 +160,10 @@ class PayrollAdjustmentController extends Controller
     {
         $run = $adjustment->payrollRun;
         $this->assertCanManageBranch($run->branch_id);
-        abort_unless($run->status === 'draft', 422, 'Adjustments can only be removed while the payroll run is in draft.');
+        $this->assertEditable($run);
 
         $adjustment->delete();
+        $this->markStale($run);
 
         return response()->json(['message' => 'Adjustment removed.']);
     }

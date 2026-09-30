@@ -2,10 +2,14 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCompany;
+use App\Models\Concerns\VisibleThroughEmployee;
 use Illuminate\Database\Eloquent\Model;
 
 class EmployeeDocument extends Model
 {
+    use BelongsToCompany, VisibleThroughEmployee;
+
     protected $fillable = [
         'employee_id',
         'type',

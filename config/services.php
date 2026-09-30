@@ -35,4 +35,12 @@ return [
         ],
     ],
 
+    // Push notifications to the mobile app (Expo push service -> FCM / APNs).
+    // The access token is optional; set it once "enhanced push security" is on in Expo.
+    'expo' => [
+        'push_enabled' => (bool) env('EXPO_PUSH_ENABLED', true),
+        'push_url' => env('EXPO_PUSH_URL', 'https://exp.host/--/api/v2/push/send'),
+        'access_token' => env('EXPO_ACCESS_TOKEN'),
+    ],
+
 ];

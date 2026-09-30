@@ -3,86 +3,41 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Employee;
+use App\Models\Role;
+use App\Models\Scopes\BranchScope;
 use App\Models\User;
+use App\Support\Access\RoleGrants;
+use App\Support\Access\Roles;
+use App\Support\Tenancy\TenantContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
-use Spatie\Permission\Models\Role;
+use Illuminate\Validation\Rules\Password;
 
+/**
+ * User accounts within the acting organisation. Guards against privilege
+ * escalation: an admin who isn't the tenant admin can only manage users in
+ * their own branches, and can only grant roles that are no broader than
+ * their own access (permissions and data scope).
+ */
 class UserController extends Controller
 {
-    /**
-     * Branch admins may only manage users within their own branch and may not
-     * grant roles above their own. Super admins manage everything.
-     */
-    private function assertCanManage(Request $request, ?User $target = null): void
+    public function __construct(private readonly TenantContext $context)
     {
-        $actor = $request->user();
-
-        if ($actor->is_super_admin || $actor->hasRole('super_admin')) {
-            return;
-        }
-
-        if (! ($actor->hasRole('branch_admin') || $actor->can('users.manage'))) {
-            abort(403, 'You are not allowed to manage users.');
-        }
-
-        if ($target && $target->branch_id !== $actor->branch_id) {
-            abort(403, 'You can only manage users in your own branch.');
-        }
-
-        if ($target && ($target->is_super_admin || $target->hasRole('super_admin'))) {
-            abort(403, 'You cannot manage a super admin account.');
-        }
-    }
-
-    private function assertRoleAssignable(Request $request, ?string $role): void
-    {
-        if (! $role) {
-            return;
-        }
-
-        $actor = $request->user();
-        $isSuper = $actor->is_super_admin || $actor->hasRole('super_admin');
-
-        if (! $isSuper && in_array($role, ['super_admin'], true)) {
-            abort(403, 'Only a super admin can assign the super admin role.');
-        }
-    }
-
-    /**
-     * Keeps the two user bases from mixing: system accounts hold operator
-     * roles and never link to an employee record; employee logins must link
-     * to an employee and cannot be super admins.
-     */
-    private function assertTypeRoleConsistent(string $type, ?string $role, $employeeId): void
-    {
-        if ($type === 'system' && $role === 'employee') {
-            abort(422, 'A system user cannot have the employee role. Create an employee login instead.');
-        }
-
-        if ($type === 'employee') {
-            if ($role === 'super_admin') {
-                abort(422, 'An employee login cannot be a super admin. Create a system user instead.');
-            }
-            if (! $employeeId) {
-                abort(422, 'An employee login must be linked to an employee record.');
-            }
-        }
     }
 
     public function index(Request $request): JsonResponse
     {
-        $this->assertCanManage($request);
-
         $actor = $request->user();
-        $query = User::with(['roles:id,name', 'branch:id,name', 'employee:id,employee_code,first_name,last_name']);
+        $query = User::with(['roles:id,name,display_name,data_scope', 'branch:id,name', 'extraBranches:id,name', 'employee:id,employee_code,first_name,last_name']);
 
-        if (! ($actor->is_super_admin || $actor->hasRole('super_admin'))) {
-            $query->where('branch_id', $actor->branch_id);
-        } elseif ($request->filled('branch_id')) {
-            $query->where('branch_id', $request->integer('branch_id'));
+        $this->scopeToManageable($query, $actor);
+
+        if ($request->filled('branch_id')) {
+            $query->where('branch_id', $this->requestedBranchId());
         }
 
         if ($request->filled('type')) {
@@ -93,6 +48,10 @@ class UserController extends Controller
             $query->whereHas('roles', fn ($q) => $q->where('name', $request->string('role')));
         }
 
+        if ($request->filled('status')) {
+            $query->where('is_active', $request->input('status') === 'active');
+        }
+
         if ($request->filled('search')) {
             $search = $request->string('search');
             $query->where(function ($q) use ($search) {
@@ -101,7 +60,7 @@ class UserController extends Controller
             });
         }
 
-        $users = $query->orderBy('name')->paginate(20);
+        $users = $query->orderBy('name')->paginate(min($request->integer('per_page', 20), 100));
 
         return response()->json([
             'data' => collect($users->items())->map(fn ($u) => $this->present($u)),
@@ -114,133 +73,177 @@ class UserController extends Controller
         ]);
     }
 
-    public function roles(): JsonResponse
+    /** Roles the actor may assign. `data` stays a list of names for older clients. */
+    public function roles(Request $request): JsonResponse
     {
+        $roles = Role::availableTo($this->context->id())
+            ->orderBy('is_system', 'desc')->orderBy('id')
+            ->get()
+            ->filter(fn (Role $role) => RoleGrants::canGrant($request->user(), $role))
+            ->values();
+
         return response()->json([
-            'data' => Role::orderBy('id')->pluck('name'),
+            'data' => $roles->pluck('name'),
+            'options' => $roles->map(fn (Role $r) => [
+                'name' => $r->name, 'label' => $r->label, 'data_scope' => $r->effectiveDataScope(), 'is_system' => $r->is_system,
+            ]),
         ]);
     }
 
     public function store(Request $request): JsonResponse
     {
-        $this->assertCanManage($request);
+        $actor = $request->user();
 
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:191'],
             'email' => ['required', 'email', 'max:191', 'unique:users,email'],
-            'password' => ['required', 'string', 'min:8'],
+            'phone' => ['nullable', 'string', 'max:30'],
+            'password' => ['required', 'string', Password::min(8)->letters()->numbers()],
             'role' => ['required', 'string', 'exists:roles,name'],
             'user_type' => ['required', 'in:system,employee'],
             'branch_id' => ['nullable', 'integer', 'exists:branches,id'],
+            'extra_branch_ids' => ['nullable', 'array'],
+            'extra_branch_ids.*' => ['integer', 'exists:branches,id'],
             'employee_id' => ['nullable', 'integer', 'exists:employees,id'],
+            'must_change_password' => ['sometimes', 'boolean'],
         ]);
 
-        $this->assertRoleAssignable($request, $validated['role']);
-        $this->assertTypeRoleConsistent($validated['user_type'], $validated['role'], $validated['employee_id'] ?? null);
+        $role = RoleGrants::assignable($actor, $validated['role']);
+        $this->assertTypeRoleConsistent($validated['user_type'], $role->name, $validated['employee_id'] ?? null);
+        $validated['branch_id'] = $this->resolveBranch($actor, $validated['branch_id'] ?? null);
+        $this->assertBranchesAssignable($actor, $validated['extra_branch_ids'] ?? []);
 
-        $actor = $request->user();
-        if (! ($actor->is_super_admin || $actor->hasRole('super_admin'))) {
-            $validated['branch_id'] = $actor->branch_id;
-        }
+        $user = DB::transaction(function () use ($validated, $role) {
+            $user = User::create([
+                'name' => $validated['name'],
+                'email' => strtolower($validated['email']),
+                'phone' => $validated['phone'] ?? null,
+                'password' => Hash::make($validated['password']),
+                'user_type' => $validated['user_type'],
+                'branch_id' => $validated['branch_id'],
+                'employee_id' => $validated['user_type'] === 'employee' ? ($validated['employee_id'] ?? null) : null,
+                'must_change_password' => $validated['must_change_password'] ?? true,
+            ]);
 
-        $user = User::create([
-            'name' => $validated['name'],
-            'email' => $validated['email'],
-            'password' => Hash::make($validated['password']),
-            'user_type' => $validated['user_type'],
-            'branch_id' => $validated['branch_id'] ?? null,
-            'employee_id' => $validated['user_type'] === 'employee' ? ($validated['employee_id'] ?? null) : null,
-            'is_super_admin' => $validated['role'] === 'super_admin',
-        ]);
+            if ($user->employee_id) {
+                Employee::withoutGlobalScope(BranchScope::class)->whereKey($user->employee_id)->update(['user_id' => $user->id]);
+            }
 
-        if ($validated['user_type'] === 'employee' && ! empty($validated['employee_id'])) {
-            \App\Models\Employee::withoutGlobalScopes()
-                ->where('id', $validated['employee_id'])
-                ->update(['user_id' => $user->id]);
-        }
+            $user->assignRole($role);
+            $user->extraBranches()->sync($this->pivot($validated['extra_branch_ids'] ?? []));
 
-        $user->assignRole($validated['role']);
+            return $user;
+        });
 
         return response()->json([
-            'data' => $this->present($user->load(['roles:id,name', 'branch:id,name', 'employee:id,employee_code,first_name,last_name'])),
+            'data' => $this->present($user->load(['roles', 'branch:id,name', 'extraBranches:id,name', 'employee:id,employee_code,first_name,last_name'])),
             'message' => 'User created successfully.',
         ], 201);
     }
 
     public function update(Request $request, User $user): JsonResponse
     {
-        $this->assertCanManage($request, $user);
+        $actor = $request->user();
+        $this->assertCanManage($actor, $user);
 
         $validated = $request->validate([
             'name' => ['sometimes', 'string', 'max:191'],
             'email' => ['sometimes', 'email', 'max:191', Rule::unique('users', 'email')->ignore($user->id)],
-            'password' => ['nullable', 'string', 'min:8'],
+            'phone' => ['nullable', 'string', 'max:30'],
+            'password' => ['nullable', 'string', Password::min(8)->letters()->numbers()],
             'role' => ['sometimes', 'string', 'exists:roles,name'],
             'branch_id' => ['nullable', 'integer', 'exists:branches,id'],
+            'extra_branch_ids' => ['nullable', 'array'],
+            'extra_branch_ids.*' => ['integer', 'exists:branches,id'],
             'employee_id' => ['nullable', 'integer', 'exists:employees,id'],
+            'is_active' => ['sometimes', 'boolean'],
         ]);
 
-        $this->assertRoleAssignable($request, $validated['role'] ?? null);
+        $role = isset($validated['role']) ? RoleGrants::assignable($actor, $validated['role']) : null;
 
-        // user_type is immutable — the two bases must stay separate. Role
-        // changes must stay consistent with the account's type.
-        if (isset($validated['role'])) {
-            $this->assertTypeRoleConsistent(
-                $user->user_type,
-                $validated['role'],
-                $validated['employee_id'] ?? $user->employee_id
-            );
+        if ($role) {
+            // user_type is immutable -- the two user bases stay separate.
+            $this->assertTypeRoleConsistent($user->user_type, $role->name, $validated['employee_id'] ?? $user->employee_id);
+
+            if ($user->id === $actor->id && $user->isTenantAdmin() && $role->name !== Roles::TENANT_ADMIN) {
+                abort(422, 'You cannot remove your own tenant admin role.');
+            }
+            if ($user->isTenantAdmin() && $role->name !== Roles::TENANT_ADMIN) {
+                $this->assertNotLastTenantAdmin($user);
+            }
         }
 
+        if (array_key_exists('is_active', $validated) && ! $validated['is_active']) {
+            abort_if($user->id === $actor->id, 422, 'You cannot deactivate your own account.');
+            if ($user->isTenantAdmin()) {
+                $this->assertNotLastTenantAdmin($user);
+            }
+        }
+
+        if (array_key_exists('branch_id', $validated)) {
+            $validated['branch_id'] = $this->resolveBranch($actor, $validated['branch_id']);
+        }
+        if (array_key_exists('extra_branch_ids', $validated)) {
+            $this->assertBranchesAssignable($actor, $validated['extra_branch_ids'] ?? []);
+        }
         if ($user->user_type === 'system') {
             unset($validated['employee_id']);
         }
 
-        $actor = $request->user();
-        $isSuper = $actor->is_super_admin || $actor->hasRole('super_admin');
+        DB::transaction(function () use ($user, $validated, $role) {
+            $user->fill(collect($validated)->only(['name', 'email', 'phone', 'employee_id', 'is_active'])->all());
 
-        // A super admin cannot demote themselves — prevents locking everyone out.
-        if (isset($validated['role']) && $user->id === $actor->id && $isSuper && $validated['role'] !== 'super_admin') {
-            abort(422, 'You cannot remove your own super admin role.');
-        }
+            if (array_key_exists('branch_id', $validated)) {
+                $user->branch_id = $validated['branch_id'];
+            }
 
-        if (! $isSuper) {
-            unset($validated['branch_id']);
-        }
+            if (! empty($validated['password'])) {
+                $user->password = Hash::make($validated['password']);
+                $user->password_changed_at = now();
+                $user->must_change_password = true;
+            }
 
-        $user->fill(collect($validated)->only(['name', 'email', 'employee_id'])->all());
+            $user->save();
 
-        if (array_key_exists('branch_id', $validated)) {
-            $user->branch_id = $validated['branch_id'];
-        }
+            if ($role && ! $user->hasRole($role->name)) {
+                $previous = $user->getRoleNames()->all();
+                $user->syncRoles([$role]);
+                activity('security')->performedOn($user)->event('role_changed')
+                    ->withProperties(['old' => ['roles' => $previous], 'attributes' => ['roles' => [$role->name]]])
+                    ->log('Role changed');
+            }
+            if (array_key_exists('extra_branch_ids', $validated)) {
+                $user->extraBranches()->sync($this->pivot($validated['extra_branch_ids'] ?? []));
+            }
 
-        if (! empty($validated['password'])) {
-            $user->password = Hash::make($validated['password']);
-        }
-
-        if (isset($validated['role'])) {
-            $user->syncRoles([$validated['role']]);
-            $user->is_super_admin = $validated['role'] === 'super_admin';
-        }
-
-        $user->save();
+            // A deactivated account or a reset password ends every session.
+            if (($user->wasChanged('is_active') && ! $user->is_active) || ! empty($validated['password'])) {
+                $user->tokens()->delete();
+            }
+        });
 
         return response()->json([
-            'data' => $this->present($user->fresh(['roles:id,name', 'branch:id,name', 'employee:id,employee_code,first_name,last_name'])),
+            'data' => $this->present($user->fresh(['roles', 'branch:id,name', 'extraBranches:id,name', 'employee:id,employee_code,first_name,last_name'])),
             'message' => 'User updated successfully.',
         ]);
     }
 
     public function destroy(Request $request, User $user): JsonResponse
     {
-        $this->assertCanManage($request, $user);
+        $actor = $request->user();
+        $this->assertCanManage($actor, $user);
 
-        if ($user->id === $request->user()->id) {
-            abort(422, 'You cannot delete your own account.');
+        abort_if($user->id === $actor->id, 422, 'You cannot delete your own account.');
+
+        if ($user->isTenantAdmin()) {
+            $this->assertNotLastTenantAdmin($user);
         }
 
-        $user->tokens()->delete();
-        $user->delete();
+        DB::transaction(function () use ($user) {
+            $user->tokens()->delete();
+            Employee::withoutGlobalScope(BranchScope::class)->where('user_id', $user->id)->update(['user_id' => null]);
+            $user->delete();
+        });
 
         return response()->json([
             'data' => null,
@@ -248,11 +251,91 @@ class UserController extends Controller
         ]);
     }
 
+    // ── Guards ────────────────────────────────────────────────────────────
+
+    private function scopeToManageable($query, User $actor): void
+    {
+        $branchIds = $actor->accessibleBranchIds();
+
+        if ($branchIds !== null) {
+            $query->where(function ($q) use ($branchIds) {
+                $q->whereIn('branch_id', $branchIds)
+                    ->orWhereHas('extraBranches', fn ($b) => $b->whereIn('branches.id', $branchIds));
+            });
+        }
+    }
+
+    private function assertCanManage(User $actor, User $target): void
+    {
+        $query = User::whereKey($target->id);
+        $this->scopeToManageable($query, $actor);
+
+        abort_unless($query->exists(), 404, 'User not found.');
+
+        if (! $actor->isTenantAdmin() && ! $actor->isPlatformAdmin() && $target->isTenantAdmin()) {
+            abort(403, 'Only a tenant admin can manage another tenant admin.');
+        }
+    }
+
+    private function resolveBranch(User $actor, ?int $branchId): ?int
+    {
+        $allowed = $actor->accessibleBranchIds();
+
+        if ($allowed === null) {
+            return $branchId;
+        }
+
+        // Branch-bound admins can only create users inside their own branches.
+        $branchId ??= $allowed[0];
+        abort_unless(in_array($branchId, $allowed, true), 403, 'You can only manage users in your own branch.');
+
+        return $branchId;
+    }
+
+    private function assertBranchesAssignable(User $actor, array $branchIds): void
+    {
+        foreach ($branchIds as $branchId) {
+            $this->authorizeBranch((int) $branchId, 'You can only grant access to your own branches.');
+        }
+    }
+
+    private function assertNotLastTenantAdmin(User $user): void
+    {
+        $admins = User::role(Roles::TENANT_ADMIN)->where('is_active', true)->count();
+
+        abort_if($admins <= 1, 422, 'An organisation must keep at least one active tenant admin.');
+    }
+
+    /**
+     * Keeps the two user bases from mixing: system accounts hold operator
+     * roles and never link to an employee record; employee logins must link
+     * to an employee.
+     */
+    private function assertTypeRoleConsistent(string $type, string $role, $employeeId): void
+    {
+        if ($type === 'system' && $role === Roles::EMPLOYEE) {
+            abort(422, 'A system user cannot have the employee role. Create an employee login instead.');
+        }
+
+        if ($type === 'employee' && ! $employeeId) {
+            abort(422, 'An employee login must be linked to an employee record.');
+        }
+    }
+
+    private function pivot(array $branchIds): array
+    {
+        $companyId = $this->context->id();
+
+        return collect($branchIds)->mapWithKeys(fn ($id) => [(int) $id => ['company_id' => $companyId]])->all();
+    }
+
     private function present(User $user): array
     {
         return array_merge($user->toArray(), [
             'roles' => $user->getRoleNames(),
+            'role_labels' => $user->roles->map(fn ($r) => $r->label)->values(),
             'permissions' => $user->getAllPermissions()->pluck('name'),
+            'data_scope' => $user->dataScope(),
         ]);
     }
 }

@@ -16,16 +16,8 @@ class BiometricConfigController extends Controller
      */
     private function assertCanManage(Request $request, Branch $branch): void
     {
-        $actor = $request->user();
-
-        if ($actor->is_super_admin || $actor->hasRole('super_admin')) {
-            return;
-        }
-
-        $isAdmin = $actor->hasAnyRole(['branch_admin']) || $actor->can('settings.manage');
-
-        abort_unless($isAdmin && $actor->branch_id === $branch->id, 403,
-            'You are not allowed to manage biometric settings for this branch.');
+        // settings.manage is enforced on the route.
+        $this->authorizeBranch($branch->id, 'You are not allowed to manage biometric settings for this branch.');
     }
 
     /**
@@ -34,11 +26,10 @@ class BiometricConfigController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $actor = $request->user();
-        $isSuper = $actor->is_super_admin || $actor->hasRole('super_admin');
+        $allowed = $request->user()->accessibleBranchIds();
 
         $branches = Branch::query()
-            ->when(! $isSuper, fn ($q) => $q->where('id', $actor->branch_id))
+            ->when($allowed !== null, fn ($q) => $q->whereIn('id', $allowed))
             ->with(['biometricConfig'])
             ->orderBy('name')
             ->get();

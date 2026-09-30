@@ -18,12 +18,8 @@ class AttendanceReportController extends Controller
 {
     private function assertCanView(Request $request): void
     {
-        $user = $request->user();
-        abort_unless(
-            $user->is_super_admin || $user->hasAnyRole(['super_admin', 'branch_admin', 'hr', 'manager']) || $user->can('attendance.view'),
-            403,
-            'You are not allowed to view attendance reports.'
-        );
+        // attendance.view is enforced on the route; here, only the branch filter.
+        $this->requestedBranchId();
     }
 
     /**
@@ -76,12 +72,12 @@ class AttendanceReportController extends Controller
 
     private function buildSummary(array $filters): array
     {
-        $month = $filters['month'];
-        $year = $filters['year'];
+        $month = (int) $filters['month'];
+        $year = (int) $filters['year'];
         $monthStart = Carbon::create($year, $month, 1)->startOfDay();
         $monthEnd = $monthStart->copy()->endOfMonth();
 
-        $employees = Employee::with(['branch:id,name', 'department:id,name'])
+        $employees = Employee::with(['branch:id,name', 'department:id,name'])->visibleTo(request()->user())
             ->where('status', 'active')
             ->when(!empty($filters['branch_id']), fn ($q) => $q->where('branch_id', $filters['branch_id']))
             ->when(!empty($filters['department_id']), fn ($q) => $q->where('department_id', $filters['department_id']))
@@ -203,12 +199,12 @@ class AttendanceReportController extends Controller
 
     private function buildDaily(array $filters): array
     {
-        $month = $filters['month'];
-        $year = $filters['year'];
+        $month = (int) $filters['month'];
+        $year = (int) $filters['year'];
         $monthStart = Carbon::create($year, $month, 1)->startOfDay();
         $monthEnd = $monthStart->copy()->endOfMonth();
 
-        $employees = Employee::with(['branch:id,name', 'department:id,name'])
+        $employees = Employee::with(['branch:id,name', 'department:id,name'])->visibleTo(request()->user())
             ->where('status', 'active')
             ->when(!empty($filters['branch_id']), fn ($q) => $q->where('branch_id', $filters['branch_id']))
             ->when(!empty($filters['department_id']), fn ($q) => $q->where('department_id', $filters['department_id']))
@@ -271,13 +267,13 @@ class AttendanceReportController extends Controller
             'department_id' => ['nullable', 'integer', 'exists:departments,id'],
         ]);
 
-        $month = $validated['month'];
-        $year = $validated['year'];
+        $month = (int) $validated['month'];
+        $year = (int) $validated['year'];
         $monthStart = Carbon::create($year, $month, 1)->startOfDay();
         $monthEnd = $monthStart->copy()->endOfMonth();
         $today = Carbon::today();
 
-        $employees = Employee::where('status', 'active')
+        $employees = Employee::visibleTo(request()->user())->where('status', 'active')
             ->where('branch_id', $validated['branch_id'])
             ->when(!empty($validated['department_id']), fn ($q) => $q->where('department_id', $validated['department_id']))
             ->orderBy('first_name')
@@ -312,7 +308,7 @@ class AttendanceReportController extends Controller
             ->get()
             ->groupBy('employee_id');
 
-        $statusCode = ['present' => 'P', 'late' => 'P', 'half_day' => 'HD', 'absent' => 'A', 'on_leave' => 'L'];
+        $statusCode = ['present' => 'P', 'late' => 'P', 'half_day' => 'HD', 'absent' => 'A', 'on_leave' => 'L', 'weekly_off' => 'W', 'holiday' => 'H'];
         $branch = Branch::find($validated['branch_id']);
 
         $rows = $employees->map(function ($emp) use ($days, $monthStart, $attendanceByEmployeeDay, $holidayDates, $leavesByEmployee, $statusCode, $today, $year, $month, $branch) {

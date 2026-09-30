@@ -2,12 +2,15 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCompany;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
 class CertificateTemplateVersion extends Model
 {
-    use HasFactory;
+    use BelongsToCompany, HasFactory;
+
+    protected array $tenantParents = ['template_id' => 'certificate_templates'];
 
     public $timestamps = false;
     const CREATED_AT = 'created_at';

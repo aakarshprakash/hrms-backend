@@ -18,6 +18,11 @@ class CertificateTemplateController extends Controller
     {
         $query = CertificateTemplate::query();
 
+        // Only template managers see drafts.
+        if (! $request->user()->can('certificates.manage')) {
+            $query->where('status', 'published');
+        }
+
         if ($request->filled('status')) {
             $query->where('status', $request->input('status'));
         }
@@ -45,6 +50,8 @@ class CertificateTemplateController extends Controller
         $validated['header_html'] = isset($validated['header_html']) ? $this->purifier->purify($validated['header_html']) : null;
         $validated['footer_html'] = isset($validated['footer_html']) ? $this->purifier->purify($validated['footer_html']) : null;
         $validated['created_by']  = auth()->id();
+
+        $this->authorizeBranch((int) $validated['branch_id']);
 
         $template = CertificateTemplate::create($validated);
 

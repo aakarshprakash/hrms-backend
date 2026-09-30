@@ -40,6 +40,7 @@ jobs:
             --exclude=".github" \
             --exclude=".env" \
             --exclude="storage/logs/*" \
+            --exclude="storage/app/" \
             "$REPO/" "$DEPLOY/"
 
           echo "===== Installing Composer Dependencies ====="

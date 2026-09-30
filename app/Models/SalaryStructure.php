@@ -2,12 +2,17 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\Audited;
+use App\Models\Concerns\BelongsToCompany;
+use App\Models\Concerns\VisibleThroughEmployee;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
 class SalaryStructure extends Model
 {
-    use HasFactory;
+    use Audited, BelongsToCompany, VisibleThroughEmployee, HasFactory;
+
+    protected string $auditLog = 'payroll';
 
     protected $fillable = [
         'employee_id',

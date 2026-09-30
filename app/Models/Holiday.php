@@ -2,13 +2,17 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\Audited;
+use App\Models\Concerns\BelongsToCompany;
 use App\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class Holiday extends Model
 {
-    use HasFactory, HasBranchScope;
+    use Audited, BelongsToCompany, HasFactory, HasBranchScope;
+
+    protected string $auditLog = 'settings';
 
     protected $fillable = [
         'branch_id',

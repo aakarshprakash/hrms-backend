@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Models\Scopes\BranchScope;
 use App\Http\Controllers\Controller;
 use App\Models\Employee;
 use App\Models\OvertimeRequest;
@@ -19,7 +20,12 @@ class OvertimeRequestController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = OvertimeRequest::with(['employee', 'approver']);
+        $user = $request->user();
+        $query = OvertimeRequest::with(['employee', 'approver'])->visibleTo($user);
+
+        if ($request->boolean('mine')) {
+            $query->where('employee_id', $user->employee_id ?? 0);
+        }
 
         if ($request->filled('employee_id')) {
             $query->where('employee_id', $request->integer('employee_id'));
@@ -56,7 +62,14 @@ class OvertimeRequestController extends Controller
             'reason' => 'nullable|string|max:1000',
         ]);
 
-        $employee = Employee::withoutGlobalScopes()->findOrFail($validated['employee_id']);
+        // Your own overtime, or -- with attendance.manage -- someone in your scope.
+        $user = $request->user();
+        if ((int) $validated['employee_id'] !== $user->employee_id) {
+            abort_unless($user->can('attendance.manage'), 403, 'You can only submit overtime for yourself.');
+            $this->authorizeEmployeeVisible((int) $validated['employee_id']);
+        }
+
+        $employee = Employee::withoutGlobalScope(BranchScope::class)->findOrFail($validated['employee_id']);
         $branchId = $employee->branch_id;
 
         $overtimeRequest = OvertimeRequest::create($validated);
@@ -79,11 +92,13 @@ class OvertimeRequestController extends Controller
 
     public function show(OvertimeRequest $request): JsonResponse
     {
+        $this->authorizeEmployeeVisible($request->employee_id);
         return response()->json(['data' => $request->load(['employee', 'approver'])]);
     }
 
     public function approve(Request $httpRequest, OvertimeRequest $request): JsonResponse
     {
+        $this->approvalService->authorizeApprover($request, $httpRequest->user());
         $comments = $httpRequest->input('comments');
         $this->approvalService->approve($request, $httpRequest->user(), $comments);
         $request->refresh();
@@ -102,6 +117,7 @@ class OvertimeRequestController extends Controller
 
     public function reject(Request $httpRequest, OvertimeRequest $request): JsonResponse
     {
+        $this->approvalService->authorizeApprover($request, $httpRequest->user());
         $comments = $httpRequest->input('comments');
         $this->approvalService->reject($request, $httpRequest->user(), $comments);
         $request->refresh();

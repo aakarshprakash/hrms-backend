@@ -13,11 +13,17 @@ class SyncBiometricAttendance extends Command
 
     protected $description = 'Pull attendance punches from each enabled branch biometric device provider';
 
-    public function handle(BiometricAttendanceService $service): int
+    public function handle(BiometricAttendanceService $service, \App\Support\Tenancy\TenantContext $context): int
     {
-        $date = $this->option('date') ?: Carbon::today()->toDateString();
+        // Yesterday too: late uploads from the device and night-shift
+        // out-punches after midnight still land on the right day.
+        $to = $this->option('date') ?: Carbon::today()->toDateString();
+        $from = $this->option('date') ?: Carbon::yesterday()->toDateString();
 
-        $configs = BiometricConfig::where('enabled', true)->with('branch')->get();
+        $configs = BiometricConfig::where('enabled', true)
+            ->whereHas('branch.company', fn ($q) => $q->where('status', 'active'))
+            ->with('branch')
+            ->get();
 
         if ($configs->isEmpty()) {
             $this->info('No branch has biometric sync enabled.');
@@ -26,8 +32,8 @@ class SyncBiometricAttendance extends Command
 
         foreach ($configs as $config) {
             try {
-                $log = $service->sync($config->branch, $date, $date);
-                $this->info("[{$config->branch->name}] synced: {$log->matched_count} day(s), {$log->unmatched_count} unmatched code(s).");
+                $log = $context->runAs($config->company_id, fn () => $service->sync($config->branch, $from, $to));
+                $this->info("[{$config->branch->name}] {$log->total_fetched} punch(es) fetched, {$log->matched_count} employee-day(s) processed, {$log->unmatched_count} unmatched code(s).");
             } catch (\Throwable $e) {
                 $this->error("[{$config->branch->name}] failed: {$e->getMessage()}");
             }

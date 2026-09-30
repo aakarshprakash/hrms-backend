@@ -7,24 +7,20 @@ use App\Models\Company;
 use App\Models\Employee;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Spatie\Permission\Models\Role;
 use Tests\TestCase;
 
 class AuthTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected Branch $branch;
+
     protected function setUp(): void
     {
         parent::setUp();
 
-        // Create roles
-        Role::create(['name' => 'super_admin', 'guard_name' => 'web']);
-        Role::create(['name' => 'employee', 'guard_name' => 'web']);
-
-        // Create company + branch
         $company = Company::create(['name' => 'Test Corp', 'timezone' => 'UTC']);
-        Branch::create([
+        $this->branch = Branch::create([
             'company_id' => $company->id,
             'name' => 'HQ',
             'city' => 'Mumbai',
@@ -34,18 +30,19 @@ class AuthTest extends TestCase
         ]);
     }
 
+    /** The organisation's admin (formerly "super admin" in the single-tenant app). */
     private function createSuperAdmin(): array
     {
         $user = User::create([
             'name' => 'Super Admin',
             'email' => 'admin@test.com',
             'password' => bcrypt('password'),
-            'is_super_admin' => true,
+            'branch_id' => $this->branch->id,
         ]);
-        $user->assignRole('super_admin');
+        $user->assignRole('tenant_admin');
 
         $employee = Employee::create([
-            'branch_id' => 1,
+            'branch_id' => $this->branch->id,
             'employee_code' => 'EMP001',
             'first_name' => 'Super',
             'last_name' => 'Admin',

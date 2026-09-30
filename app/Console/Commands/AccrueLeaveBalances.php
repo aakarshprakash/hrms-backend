@@ -2,49 +2,43 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Employee;
-use App\Models\LeaveBalance;
-use App\Models\LeaveType;
-use Carbon\Carbon;
+use App\Models\Company;
+use App\Services\Leave\LeaveAccrualService;
+use App\Support\Tenancy\TenantContext;
+use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 
+/**
+ * Credits leave by each type's policy and closes out finished leave years,
+ * tenant by tenant. Idempotent -- each balance is credited once per period
+ * -- so it runs daily and can be re-run (or run for a past date to catch
+ * up) without double-crediting anyone.
+ */
 class AccrueLeaveBalances extends Command
 {
-    protected $signature = 'hrms:accrue-leave-balances';
+    protected $signature = 'hrms:accrue-leave-balances
+                            {--company= : Only this company id}
+                            {--date= : Accrue as of this date (default: today)}';
 
-    protected $description = 'Monthly leave balance accrual';
+    protected $description = 'Credit leave balances by policy (annual / monthly) and carry forward at year end';
 
-    public function handle(): void
+    public function handle(LeaveAccrualService $accrual, TenantContext $context): int
     {
-        $year = Carbon::now()->year;
-        $employees = Employee::all();
+        $companies = $context->withoutScoping(fn () => Company::query()
+            ->whereNull('suspended_at')
+            ->when($this->option('company'), fn ($q, $id) => $q->whereKey($id))
+            ->get(['id', 'name', 'timezone']));
 
-        foreach ($employees as $employee) {
-            $leaveTypes = LeaveType::withoutGlobalScopes()
-                ->where('branch_id', $employee->branch_id)
-                ->get();
+        foreach ($companies as $company) {
+            $asOf = $this->option('date')
+                ? CarbonImmutable::parse($this->option('date'))
+                : CarbonImmutable::now($company->timezone ?: config('app.timezone'));
 
-            foreach ($leaveTypes as $leaveType) {
-                $accrual = round($leaveType->days_per_year / 12, 2);
+            $stats = $context->runAs($company->id, fn () => $accrual->syncAll($asOf));
 
-                $balance = LeaveBalance::firstOrCreate(
-                    [
-                        'employee_id' => $employee->id,
-                        'leave_type_id' => $leaveType->id,
-                        'year' => $year,
-                    ],
-                    [
-                        'allocated' => 0,
-                        'used' => 0,
-                        'balance' => 0,
-                    ]
-                );
-
-                $balance->increment('allocated', $accrual);
-                $balance->increment('balance', $accrual);
-            }
+            $this->info("{$company->name}: {$stats['employees']} employee(s), {$stats['credits']} credit(s) as of {$asOf->toDateString()}.");
         }
 
-        $this->info('Leave balances accrued successfully.');
+        return self::SUCCESS;
     }
 }

@@ -22,7 +22,8 @@ class EmployeeFactory extends Factory
             'phone' => fake()->phoneNumber(),
             'date_of_birth' => fake()->dateTimeBetween('-50 years', '-20 years')->format('Y-m-d'),
             'gender' => fake()->randomElement(['male', 'female', 'other']),
-            'date_of_joining' => fake()->dateTimeBetween('-5 years', 'now')->format('Y-m-d'),
+            // At least a year ago, so recent payroll periods are full months.
+            'date_of_joining' => fake()->dateTimeBetween('-5 years', '-1 year')->format('Y-m-d'),
             'employment_type' => 'full_time',
             'status' => 'active',
         ];

@@ -13,16 +13,8 @@ class BiometricSyncController extends Controller
 {
     private function assertCanManage(Request $request, Branch $branch): void
     {
-        $actor = $request->user();
-
-        if ($actor->is_super_admin || $actor->hasRole('super_admin')) {
-            return;
-        }
-
-        $isAdmin = $actor->hasAnyRole(['branch_admin', 'hr']) || $actor->can('attendance.manage');
-
-        abort_unless($isAdmin && $actor->branch_id === $branch->id, 403,
-            'You are not allowed to sync attendance for this branch.');
+        // attendance.manage / settings.manage is enforced on the route.
+        $this->authorizeBranch($branch->id, 'You are not allowed to sync attendance for this branch.');
     }
 
     public function sync(Request $request, Branch $branch, BiometricAttendanceService $service): JsonResponse

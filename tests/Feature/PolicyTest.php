@@ -7,7 +7,6 @@ use App\Models\Company;
 use App\Models\Employee;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Spatie\Permission\Models\Role;
 use Tests\TestCase;
 
 class PolicyTest extends TestCase
@@ -21,10 +20,6 @@ class PolicyTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-
-        foreach (['super_admin', 'branch_admin', 'hr', 'manager', 'employee'] as $role) {
-            Role::create(['name' => $role, 'guard_name' => 'web']);
-        }
 
         $this->company = Company::create(['name' => 'Test Corp', 'timezone' => 'UTC']);
 
@@ -54,7 +49,7 @@ class PolicyTest extends TestCase
             'name' => ucfirst($role) . $suffix,
             'email' => $email,
             'password' => bcrypt('password'),
-            'is_super_admin' => ($role === 'super_admin'),
+            'is_super_admin' => false,
             'branch_id' => $branchId,
         ]);
         $user->assignRole($role);

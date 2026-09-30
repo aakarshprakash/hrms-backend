@@ -13,7 +13,8 @@ class DesignationController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = Designation::with(['branch', 'department']);
+        $query = Designation::with(['branch', 'department'])
+            ->withCount(['employees' => fn ($q) => $q->where('status', 'active')]);
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->integer('branch_id'));
@@ -30,6 +31,8 @@ class DesignationController extends Controller
 
     public function store(StoreDesignationRequest $request): JsonResponse
     {
+        $this->authorizeBranch((int) $request->validated('branch_id'));
+
         $designation = Designation::create($request->validated());
 
         return response()->json([
@@ -50,6 +53,10 @@ class DesignationController extends Controller
 
     public function update(UpdateDesignationRequest $request, Designation $designation): JsonResponse
     {
+        if (($newBranch = $request->validated('branch_id')) !== null) {
+            $this->authorizeBranch((int) $newBranch);
+        }
+
         $designation->update($request->validated());
 
         return response()->json([
