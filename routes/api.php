@@ -246,6 +246,8 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
         Route::get('attendance/reports/summary/export', [AttendanceReportController::class, 'summaryExport']);
         Route::get('attendance/reports/daily', [AttendanceReportController::class, 'daily']);
         Route::get('attendance/reports/daily/export', [AttendanceReportController::class, 'dailyExport']);
+        Route::get('attendance/reports/monthly-punches', [AttendanceReportController::class, 'monthlyPunches']);
+        Route::get('attendance/reports/monthly-punches/export', [AttendanceReportController::class, 'monthlyPunchesExport']);
         Route::get('attendance/reports/muster-roll', [AttendanceReportController::class, 'musterRoll']);
         Route::get('attendance/exceptions', [AttendanceExceptionController::class, 'index']);
     });

@@ -197,15 +197,60 @@ class AttendanceReportController extends Controller
         }, $filename, ['Content-Type' => 'text/csv']);
     }
 
-    private function buildDaily(array $filters): array
+    public function monthlyPunches(Request $request)
+    {
+        return response()->json(['data' => $this->buildDaily($this->monthlyPunchFilters($request), true)]);
+    }
+
+    public function monthlyPunchesExport(Request $request): StreamedResponse
+    {
+        $filters = $this->monthlyPunchFilters($request);
+        $rows = $this->buildDaily($filters, true);
+        $filename = sprintf('attendance-monthly-punches-%d-%02d.csv', $filters['year'], $filters['month']);
+
+        return response()->streamDownload(function () use ($rows) {
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Employee Code', 'Name', 'Branch', 'Department', 'Date', 'Status', 'Punch In', 'Punch Out', 'Timezone', 'Worked Hours', 'Worked Minutes'], ',', '"', '');
+            foreach ($rows as $row) {
+                fputcsv($out, [
+                    $row['employee']['employee_code'], $row['employee']['name'], $row['employee']['branch'], $row['employee']['department'],
+                    $row['date'], $row['status'], $row['check_in_at'] ?? '', $row['check_out_at'] ?? '', $row['timezone'],
+                    $row['worked_hours'] ?? '', $row['worked_minutes'] ?? '',
+                ], ',', '"', '');
+            }
+            fclose($out);
+        }, $filename, ['Content-Type' => 'text/csv']);
+    }
+
+    private function monthlyPunchFilters(Request $request): array
+    {
+        $this->assertCanView($request);
+
+        return $request->validate([
+            'month' => ['required', 'integer', 'min:1', 'max:12'],
+            'year' => ['required', 'integer', 'min:2000', 'max:2100'],
+            'branch_id' => ['nullable', 'integer', 'exists:branches,id'],
+            'department_id' => ['nullable', 'integer', 'exists:departments,id'],
+            'employee_id' => ['nullable', 'integer', 'exists:employees,id'],
+        ]);
+    }
+
+    private function buildDaily(array $filters, bool $includeCalendar = false): array
     {
         $month = (int) $filters['month'];
         $year = (int) $filters['year'];
         $monthStart = Carbon::create($year, $month, 1)->startOfDay();
         $monthEnd = $monthStart->copy()->endOfMonth();
 
-        $employees = Employee::with(['branch:id,name', 'department:id,name'])->visibleTo(request()->user())
-            ->where('status', 'active')
+        $employees = Employee::with(['branch:id,name,timezone', 'department:id,name'])->visibleTo(request()->user())
+            ->where(function ($query) use ($includeCalendar, $monthStart, $monthEnd) {
+                $query->where('status', 'active');
+                if ($includeCalendar) {
+                    // Former employees with records still belong in historical reports.
+                    $query->orWhereIn('id', Attendance::select('employee_id')
+                        ->whereBetween('date', [$monthStart->toDateString(), $monthEnd->toDateString()]));
+                }
+            })
             ->when(!empty($filters['branch_id']), fn ($q) => $q->where('branch_id', $filters['branch_id']))
             ->when(!empty($filters['department_id']), fn ($q) => $q->where('department_id', $filters['department_id']))
             ->when(!empty($filters['employee_id']), fn ($q) => $q->where('id', $filters['employee_id']))
@@ -230,26 +275,51 @@ class AttendanceReportController extends Controller
                 continue;
             }
 
-            $rows[] = [
-                'employee' => [
-                    'id' => $emp->id,
-                    'employee_code' => $emp->employee_code,
-                    'name' => $emp->full_name,
-                    'branch' => $emp->branch?->name,
-                    'department' => $emp->department?->name,
-                ],
-                'date' => $att->date->toDateString(),
-                'status' => $att->status,
-                'check_in' => $att->check_in?->format('H:i'),
-                'check_out' => $att->check_out?->format('H:i'),
-                'worked_hours' => $att->worked_minutes ? round($att->worked_minutes / 60, 1) : null,
-                'late_by_minutes' => $att->late_by_minutes,
-            ];
+            $rows[] = $this->dailyRow($emp, $att, $att->date->toDateString());
+        }
+
+        if ($includeCalendar) {
+            $recorded = collect($rows)->keyBy(fn ($row) => $row['employee']['id'] . '-' . $row['date']);
+            $rows = [];
+            foreach ($employees as $emp) {
+                foreach (CarbonPeriod::create($monthStart, $monthEnd) as $day) {
+                    $date = $day->toDateString();
+                    $rows[] = $recorded->get($emp->id . '-' . $date) ?? $this->dailyRow($emp, null, $date);
+                }
+            }
         }
 
         usort($rows, fn ($a, $b) => [$a['employee']['name'], $a['date']] <=> [$b['employee']['name'], $b['date']]);
 
         return $rows;
+    }
+
+    private function dailyRow(Employee $emp, ?Attendance $att, string $date): array
+    {
+        $timezone = $emp->branch?->timezone ?: config('app.timezone', 'UTC');
+        $checkIn = $att?->check_in?->copy()->setTimezone($timezone);
+        $checkOut = $att?->check_out?->copy()->setTimezone($timezone);
+        $workedMinutes = ($checkIn === null) !== ($checkOut === null) ? null : $att?->worked_minutes;
+
+        return [
+            'employee' => [
+                'id' => $emp->id,
+                'employee_code' => $emp->employee_code,
+                'name' => $emp->full_name,
+                'branch' => $emp->branch?->name,
+                'department' => $emp->department?->name,
+            ],
+            'date' => $date,
+            'status' => $att?->status ?? 'not_recorded',
+            'check_in' => $checkIn?->format('H:i'),
+            'check_out' => $checkOut?->format('H:i'),
+            'check_in_at' => $checkIn?->toDateTimeString(),
+            'check_out_at' => $checkOut?->toDateTimeString(),
+            'timezone' => $timezone,
+            'worked_minutes' => $workedMinutes === null ? null : (int) $workedMinutes,
+            'worked_hours' => $workedMinutes === null ? null : round($workedMinutes / 60, 2),
+            'late_by_minutes' => $att?->late_by_minutes,
+        ];
     }
 
     /**
