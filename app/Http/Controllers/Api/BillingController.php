@@ -7,7 +7,9 @@ use App\Models\Branch;
 use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Plan;
+use App\Http\Controllers\Api\Platform\PlatformLicenseController;
 use App\Services\Billing\InvoiceService;
+use App\Services\Billing\LicenseService;
 use App\Services\Billing\PaymentService;
 use App\Services\Billing\RazorpayGateway;
 use App\Services\Billing\SubscriptionService;
@@ -58,7 +60,13 @@ class BillingController extends Controller
             'subscription' => $subscription ? $subscription->toArray() + [
                 'trial_days_left' => $subscription->trialDaysLeft(),
                 'is_live' => $subscription->isLive(),
+                'license' => $subscription->billing_mode === 'license' && $subscription->licenseKey ? [
+                    'key' => $subscription->licenseKey->masked(),
+                    'months' => $subscription->licenseKey->months,
+                    'redeemed_at' => $subscription->licenseKey->redeemed_at,
+                ] : null,
             ] : null,
+            'autopay_available' => PlatformLicenseController::billingSettings()['autopay_available'],
             'usage' => ['employees' => $employees, 'branches' => Branch::count()],
             'plans' => $plans,
             'next_invoice' => $next,
@@ -70,6 +78,35 @@ class BillingController extends Controller
             'cycles' => Cycles::all(),
             'gst_rate' => (float) config('billing.gst_rate', 18),
         ]]);
+    }
+
+    /** Activates (or extends) the plan with a licence key bought offline. */
+    public function redeemLicense(Request $request, LicenseService $licenses): JsonResponse
+    {
+        $v = $request->validate(['key' => ['required', 'string', 'max:60']]);
+        $company = app(TenantContext::class)->company();
+        $subscription = app(TenantContext::class)->withoutScoping(fn () => $licenses->redeem($company, $v['key'], $request->user()));
+
+        return response()->json(['data' => $subscription->load('plan'), 'message' => "Licence activated: {$subscription->plan->name} until "
+            . CarbonImmutable::parse($subscription->current_period_end)->format('j M Y') . '.']);
+    }
+
+    /**
+     * Automatic renewal by card / UPI mandate. Stored now; charging starts once
+     * the platform turns mandates on. Until then renewals are invoiced as usual.
+     */
+    public function setAutopay(Request $request): JsonResponse
+    {
+        $v = $request->validate(['autopay' => ['required', 'boolean']]);
+        $subscription = $this->subscriptions->current(app(TenantContext::class)->company());
+        abort_unless($subscription && $subscription->isLive(), 422, 'There is no active subscription to renew.');
+        $subscription->update(['autopay' => $v['autopay']]);
+
+        $available = PlatformLicenseController::billingSettings()['autopay_available'];
+
+        return response()->json(['data' => $subscription->fresh(), 'message' => $v['autopay']
+            ? ($available ? 'Autopay is on: renewals will be charged automatically.' : 'Autopay is on. Automatic charging starts once it’s enabled for your account — until then you’ll get renewal invoices as usual.')
+            : 'Autopay is off: you’ll pay each renewal invoice yourself.']);
     }
 
     public function choosePlan(Request $request): JsonResponse

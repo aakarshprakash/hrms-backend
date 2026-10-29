@@ -20,6 +20,7 @@ class PayrollRunAdjustment extends Model
         'component_id',
         'amount',
         'note',
+        'meta',
         'created_by',
     ];
 
@@ -27,6 +28,7 @@ class PayrollRunAdjustment extends Model
     {
         return [
             'amount' => 'decimal:2',
+            'meta' => 'array',
         ];
     }
 

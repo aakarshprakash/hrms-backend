@@ -53,6 +53,12 @@ Schedule::command('biometric:sync')
 // Idempotent (skips anything already marked), so re-running hourly is
 // harmless. Offset 20 minutes past biometric:sync's hourly tick so real
 // punch data always gets first chance to land for that hour.
+// Short-staffing alerts: each rule is checked once its check time has passed (branch time).
+Schedule::command('attendance:check-coverage')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping()
+    ->appendOutputTo($logPath);
+
 Schedule::command('attendance:mark-absentees')
     ->hourlyAt(20)
     ->withoutOverlapping()

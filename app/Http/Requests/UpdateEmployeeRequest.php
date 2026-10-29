@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Support\Tenancy\TenantContext;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -34,7 +35,7 @@ class UpdateEmployeeRequest extends FormRequest
                 'sometimes',
                 'string',
                 'max:191',
-                Rule::unique('employees', 'employee_code')->ignore($this->route('employee')),
+                Rule::unique('employees', 'employee_code')->where('company_id', app(TenantContext::class)->id())->ignore($this->route('employee')),
             ],
             'biometric_emp_code' => [
                 'nullable', 'string', 'max:50',
@@ -43,7 +44,7 @@ class UpdateEmployeeRequest extends FormRequest
                     ->ignore($this->route('employee')),
             ],
             'first_name' => ['sometimes', 'string', 'max:191'],
-            'last_name' => ['sometimes', 'string', 'max:191'],
+            'last_name' => ['sometimes', 'nullable', 'string', 'max:191'],
             'email' => ['sometimes', 'email', 'max:191'],
             'phone' => ['nullable', 'string', 'max:50'],
             'date_of_birth' => ['nullable', 'date'],

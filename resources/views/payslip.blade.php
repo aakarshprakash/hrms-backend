@@ -92,15 +92,14 @@
     <tr>
         <td style="width: 50%; vertical-align: top; padding-right: 6px;">
             <table class="card lines">
-                <tr><th>Earnings</th><th class="right">Rate</th><th class="right">Earned</th></tr>
+                <tr><th>Earnings</th><th class="right">Amount</th></tr>
                 @foreach ($p['earnings'] as $e)
                     <tr>
                         <td>{{ $e['name'] }}@if ($e['note'])<br><span class="note">{{ $e['note'] }}</span>@endif</td>
-                        <td class="right muted">{{ $e['monthly'] !== null ? number_format($e['monthly'], 2) : '' }}</td>
                         <td class="right">{{ number_format($e['amount'], 2) }}</td>
                     </tr>
                 @endforeach
-                <tr class="total"><td>Gross earnings</td><td></td><td class="right">{{ number_format($p['gross'], 2) }}</td></tr>
+                <tr class="total"><td>Gross earnings</td><td class="right">{{ number_format($p['gross'], 2) }}</td></tr>
             </table>
         </td>
         <td style="width: 50%; vertical-align: top; padding-left: 6px;">

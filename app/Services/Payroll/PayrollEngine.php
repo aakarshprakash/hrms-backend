@@ -122,7 +122,8 @@ class PayrollEngine
             $entry = ['code' => $adj->component->code, 'name' => $adj->component->name, 'amount' => round((float) $adj->amount, 2), 'kind' => 'adjustment', 'note' => $adj->note];
             if ($adj->component->type === 'earning') {
                 $earnings[] = $entry + ['monthly' => null, 'earned' => $entry['amount'], 'pf' => (bool) $adj->component->pf_applicable,
-                    'esi' => (bool) $adj->component->esi_applicable, 'taxable' => (bool) $adj->component->taxable];
+                    'esi' => (bool) $adj->component->esi_applicable, 'taxable' => (bool) $adj->component->taxable,
+                    'pf_arrear' => $adj->meta['pf_arrear'] ?? null];
             } else {
                 $deductions[] = $entry;
             }
@@ -144,18 +145,41 @@ class PayrollEngine
 
         $gross = round(array_sum(array_column($earnings, 'earned')), 2);
 
+        // Loss of pay, for the payslip: what absences (and days before joining / after leaving) took off
+        // the salary. Earnings are stored as earned, so gross and statutory wages are unaffected; the
+        // payslip shows the full rate with this as a deduction line.
+        $lopAmount = round(array_sum(array_map(fn ($e) => ($e['kind'] ?? '') === 'structure' && ! empty($e['prorated']) && $e['monthly'] !== null
+            ? max(0, (float) $e['monthly'] - (float) $e['earned']) : 0, $earnings)), 2);
+
         // ── Statutory ────────────────────────────────────────────────────
         $rules = $context['rules'];
         $stat = ['pf' => null, 'esi' => null, 'pt' => null, 'lwf' => null, 'tds' => null];
 
         if ($rules->has('PF') && ! $employee->pf_opted_out) {
-            $pfWage = array_sum(array_map(fn ($e) => $e['pf'] ? $e['earned'] : 0, $earnings));
+            // Arrears carry their own PF wage (held to the ceiling of the months they belong to),
+            // so they're kept out of this month's wage and its ceiling.
+            $arrears = array_values(array_filter($earnings, fn ($e) => ! empty($e['pf_arrear'])));
+            $pfWage = array_sum(array_map(fn ($e) => $e['pf'] && empty($e['pf_arrear']) ? $e['earned'] : 0, $earnings));
             if ($pfWage <= 0 && $basicMonthly > 0) {
                 $pfWage = $basicMonthly * $proration; // no component flagged: basic
             }
             $stat['pf'] = $this->statutory->pf($pfWage, $rules['PF']->config_json ?? []);
             if ($stat['pf']['employee'] > 0) {
                 $deductions[] = ['code' => 'PF', 'name' => 'Provident Fund', 'amount' => $stat['pf']['employee'], 'kind' => 'statutory'];
+            }
+            if ($arrears) {
+                $arrear = $this->statutory->pfOnArrears(
+                    array_sum(array_map(fn ($e) => (float) ($e['pf_arrear']['pf_wage'] ?? 0), $arrears)),
+                    array_sum(array_map(fn ($e) => (float) ($e['pf_arrear']['eps_wage'] ?? 0), $arrears)),
+                    $rules['PF']->config_json ?? [],
+                );
+                if ($arrear['employee'] > 0) {
+                    $deductions[] = ['code' => 'PF_ARR', 'name' => 'Provident Fund on arrears', 'amount' => $arrear['employee'], 'kind' => 'statutory'];
+                }
+                $stat['pf']['arrears'] = $arrear;
+                foreach (['employee', 'employer_epf', 'employer_eps', 'edli', 'admin'] as $k) {
+                    $stat['pf'][$k] += $arrear[$k];
+                }
             }
         }
 
@@ -224,7 +248,7 @@ class PayrollEngine
             'payable_days' => $att['payable_days'],
             'lop_days' => $att['lop_days'],
             'taxable_gross' => $taxableGross,
-            'pf_wage' => $stat['pf']['wage'] ?? 0,
+            'pf_wage' => $stat['pf']['wage'] ?? 0, // this month's; PF on arrears is in breakdown_json.statutory.pf.arrears
             'pf_employee' => $stat['pf']['employee'] ?? 0,
             'pf_employer' => $stat['pf']['employer_epf'] ?? 0,
             'eps_employer' => $stat['pf']['employer_eps'] ?? 0,
@@ -241,11 +265,12 @@ class PayrollEngine
                 'deductions' => $deductions,
                 'statutory' => $stat,
                 'employer_contributions' => $employer,
-                'totals' => ['gross' => $gross, 'deductions' => $totalDeductions, 'net' => $net, 'employer_cost' => $employerCost],
+                'totals' => ['gross' => $gross, 'deductions' => $totalDeductions, 'net' => $net, 'employer_cost' => $employerCost,
+                    'lop' => $lopAmount, 'gross_rate' => round($gross + $lopAmount, 2)],
                 'warnings' => $warnings,
                 // v1 keys, for anything still reading the old shape
                 'ot_pay' => $otPay,
-                'lop' => ['days' => $att['lop_days'], 'per_day_rate' => null, 'amount' => null],
+                'lop' => ['days' => $att['lop_days'], 'per_day_rate' => null, 'amount' => $lopAmount],
             ],
             'warnings' => $warnings,
         ];

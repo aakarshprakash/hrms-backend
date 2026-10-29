@@ -27,6 +27,9 @@ class Subscription extends Model
         'plan_id',
         'status',
         'billing_cycle',
+        'billing_mode',
+        'license_key_id',
+        'autopay',
         'trial_ends_at',
         'current_period_start',
         'current_period_end',
@@ -45,6 +48,7 @@ class Subscription extends Model
             'current_period_end' => 'date:Y-m-d',
             'plan_confirmed_at' => 'datetime',
             'cancel_at_period_end' => 'boolean',
+            'autopay' => 'boolean',
             'cancelled_at' => 'datetime',
             'custom_monthly_price' => 'decimal:2',
         ];
@@ -53,6 +57,11 @@ class Subscription extends Model
     public function plan()
     {
         return $this->belongsTo(Plan::class);
+    }
+
+    public function licenseKey()
+    {
+        return $this->belongsTo(LicenseKey::class);
     }
 
     public function invoices()

@@ -16,7 +16,9 @@ use App\Http\Controllers\Api\CertificateTemplateController;
 use App\Http\Controllers\Api\CertificateTokenController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\DepartmentController;
+use App\Http\Controllers\Api\CoverageController;
 use App\Http\Controllers\Api\DesignationController;
+use App\Http\Controllers\Api\WorkLocationController;
 use App\Http\Controllers\Api\DeviceTokenController;
 use App\Http\Controllers\Api\DocumentController;
 use App\Http\Controllers\Api\EmployeeController;
@@ -28,6 +30,8 @@ use App\Http\Controllers\Api\BillingController;
 use App\Http\Controllers\Api\DashboardOverviewController;
 use App\Http\Controllers\Api\HolidayController;
 use App\Http\Controllers\Api\Platform\PlatformBillingController;
+use App\Http\Controllers\Api\Platform\PlatformLicenseController;
+use App\Http\Controllers\Api\Platform\PlatformMailController;
 use App\Http\Controllers\Api\PublicSignupController;
 use App\Http\Controllers\Api\MyProfileController;
 use App\Http\Controllers\Api\NotificationController;
@@ -128,6 +132,16 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
         Route::post('/invoices/{invoice}/mark-paid', [PlatformBillingController::class, 'markPaid']);
         Route::post('/invoices/{invoice}/void', [PlatformBillingController::class, 'void']);
 
+        // Licence keys for offline payments, and platform billing switches (autopay).
+        Route::get('/licenses', [PlatformLicenseController::class, 'index']);
+        Route::post('/licenses', [PlatformLicenseController::class, 'store']);
+        Route::post('/licenses/{license}/revoke', [PlatformLicenseController::class, 'revoke']);
+        Route::get('/billing/settings', [PlatformLicenseController::class, 'settings']);
+        Route::get('/mail-settings', [PlatformMailController::class, 'show']);
+        Route::put('/mail-settings', [PlatformMailController::class, 'update']);
+        Route::post('/mail-settings/test', [PlatformMailController::class, 'test'])->middleware('throttle:10,1');
+        Route::put('/billing/settings', [PlatformLicenseController::class, 'updateSettings']);
+
         // Revenue: MRR, collections, and every client's subscriptions, invoices and payments.
         Route::get('/billing/overview', [PlatformRevenueController::class, 'overview']);
         Route::get('/billing/subscriptions', [PlatformRevenueController::class, 'subscriptions']);
@@ -151,6 +165,7 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
     Route::middleware('permission:settings.manage')->group(function () {
         Route::post('/branches', [BranchController::class, 'store']);
         Route::put('/branches/{branch}', [BranchController::class, 'update']);
+        Route::put('/employees/code-settings', [EmployeeController::class, 'updateCodeSettings']);
         // Geo-fencing: branch switch, sites, and who must punch where.
         Route::middleware('feature:geofence')->group(function () {
             Route::get('/geofences', [GeofenceController::class, 'index']);
@@ -171,6 +186,7 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
     Route::get('/departments/{department}', [DepartmentController::class, 'show']);
     Route::get('/designations', [DesignationController::class, 'index']);
     Route::get('/designations/{designation}', [DesignationController::class, 'show']);
+    Route::get('/work-locations', [WorkLocationController::class, 'index']);
     Route::middleware('permission:departments.manage')->group(function () {
         Route::post('/departments', [DepartmentController::class, 'store']);
         Route::put('/departments/{department}', [DepartmentController::class, 'update']);
@@ -178,6 +194,9 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
         Route::post('/designations', [DesignationController::class, 'store']);
         Route::put('/designations/{designation}', [DesignationController::class, 'update']);
         Route::delete('/designations/{designation}', [DesignationController::class, 'destroy']);
+        Route::post('/work-locations', [WorkLocationController::class, 'store']);
+        Route::put('/work-locations/{workLocation}', [WorkLocationController::class, 'update']);
+        Route::delete('/work-locations/{workLocation}', [WorkLocationController::class, 'destroy']);
     });
 
     // ── Audit trail ───────────────────────────────────────────────────────
@@ -217,6 +236,7 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
     // ── Employees ─────────────────────────────────────────────────────────
     // Reads: EmployeePolicy + data scope. Writes: policy on top of the permission.
     Route::get('/employees', [EmployeeController::class, 'index']);
+    Route::get('/employees/code-settings', [EmployeeController::class, 'codeSettings']);
     Route::get('/employees/{employee}', [EmployeeController::class, 'show']);
     Route::post('/employees/{employee}/avatar', [EmployeeController::class, 'uploadAvatar']);
     Route::get('/employees/{employee}/documents', [DocumentController::class, 'index']);
@@ -283,6 +303,19 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
         Route::get('attendance/exceptions', [AttendanceExceptionController::class, 'index']);
     });
     Route::post('attendance/manual', [AttendanceController::class, 'manualUpsert'])->middleware('permission:attendance.manage');
+
+    // Team coverage: who's in vs each team's minimum, the coming days, and leave impact.
+    Route::middleware('permission:attendance.view|attendance.manage|leaves.approve')->group(function () {
+        Route::get('coverage/today', [CoverageController::class, 'today']);
+        Route::get('coverage/forecast', [CoverageController::class, 'forecast']);
+        Route::get('coverage/rules', [CoverageController::class, 'rules']);
+        Route::get('leaves/{leave}/coverage', [CoverageController::class, 'leaveImpact']);
+    });
+    Route::middleware('permission:attendance.manage')->group(function () {
+        Route::post('coverage/rules', [CoverageController::class, 'store']);
+        Route::put('coverage/rules/{rule}', [CoverageController::class, 'update']);
+        Route::delete('coverage/rules/{rule}', [CoverageController::class, 'destroy']);
+    });
     Route::post('attendance/reprocess', [AttendanceProcessingController::class, 'reprocess'])->middleware('permission:attendance.manage');
     Route::middleware('permission:attendance.view|attendance.manage')->group(function () {
         Route::get('raw-punches', [AttendanceProcessingController::class, 'index']);
@@ -355,6 +388,8 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
         Route::post('billing/plan', [BillingController::class, 'choosePlan']);
         Route::post('billing/cancel', [BillingController::class, 'cancel']);
         Route::post('billing/resume', [BillingController::class, 'resume']);
+        Route::post('billing/license', [BillingController::class, 'redeemLicense'])->middleware('throttle:10,1');
+        Route::put('billing/autopay', [BillingController::class, 'setAutopay']);
         Route::put('billing/details', [BillingController::class, 'updateDetails']);
         Route::get('billing/invoices', [BillingController::class, 'invoices']);
         Route::get('billing/invoices/{invoice}/pdf', [BillingController::class, 'invoicePdf']);

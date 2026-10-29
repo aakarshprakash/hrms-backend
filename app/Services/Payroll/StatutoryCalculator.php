@@ -40,6 +40,28 @@ class StatutoryCalculator
     }
 
     /**
+     * PF on arrears. The wages come already limited to each original month's
+     * ceiling, so no further cap applies; EPS is on the EPS wage only.
+     */
+    public function pfOnArrears(float $pfWage, float $epsWage, array $config = []): array
+    {
+        $c = array_merge(config('statutory.pf'), $config);
+        $employee = round($pfWage * (float) $c['employee_rate'] / 100);
+        $employerTotal = round($pfWage * (float) ($c['employer_rate'] ?? 12) / 100);
+        $eps = min($employerTotal, round(min($epsWage, $pfWage) * (float) ($c['eps_rate'] ?? 8.33) / 100));
+
+        return [
+            'wage' => round($pfWage, 2),
+            'eps_wage' => round(min($epsWage, $pfWage), 2),
+            'employee' => $employee,
+            'employer_epf' => max(0, $employerTotal - $eps),
+            'employer_eps' => $eps,
+            'edli' => round(min($epsWage, $pfWage) * (float) ($c['edli_rate'] ?? 0.5) / 100),
+            'admin' => round($pfWage * (float) ($c['admin_rate'] ?? 0.5) / 100),
+        ];
+    }
+
+    /**
      * Employees' State Insurance. Eligibility is judged on the fixed monthly
      * wage (not reduced by absences); contributions on the wage actually
      * earned, rounded up to the next rupee as ESIC does.

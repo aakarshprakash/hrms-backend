@@ -97,7 +97,10 @@ class PayrollRunController extends Controller
     {
         $run->load(['branch:id,name,payroll_days_in_month', 'runBy:id,name', 'finalizedBy:id,name'])->loadCount('payslips');
 
-        return response()->json(['data' => $run]);
+        // Which statutory deductions the branch has switched on, so the page can say when none are.
+        $statutory = \App\Models\StatutoryRule::where('branch_id', $run->branch_id)->where('is_active', true)->pluck('rule_type')->unique()->values();
+
+        return response()->json(['data' => $run->toArray() + ['statutory_rules' => $statutory]]);
     }
 
     public function destroy(PayrollRun $run): JsonResponse

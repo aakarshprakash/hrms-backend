@@ -21,7 +21,7 @@ class PayslipPresenter
         $company = $employee?->company()->first() ?? $employee?->branch?->company;
         $b = $payslip->breakdown_json ?? [];
 
-        [$earnings, $deductions] = ($b['version'] ?? 1) >= 2 ? $this->v2($b) : $this->v1($b, $payslip);
+        [$earnings, $deductions, $lop] = ($b['version'] ?? 1) >= 2 ? $this->v2($b) : [...$this->v1($b, $payslip), 0.0];
         $att = $b['attendance'] ?? null;
 
         return [
@@ -63,8 +63,9 @@ class PayslipPresenter
             'earnings' => $earnings,
             'deductions' => $deductions,
             'employer' => $b['employer_contributions'] ?? [],
-            'gross' => (float) $payslip->gross_pay,
-            'total_deductions' => (float) $payslip->total_deductions,
+            // Full-rate gross with loss of pay among the deductions; net pay is the same either way.
+            'gross' => round((float) $payslip->gross_pay + $lop, 2),
+            'total_deductions' => round((float) $payslip->total_deductions + $lop, 2),
             'net' => (float) $payslip->net_pay,
             'net_words' => IndianNumberToWords::rupees((float) $payslip->net_pay),
             'currency' => $payslip->currency_code === 'INR' ? '₹' : $payslip->currency_code . ' ',
@@ -73,18 +74,28 @@ class PayslipPresenter
         ];
     }
 
+    /** Earnings at their full monthly rate; what attendance took off becomes a Loss of pay deduction. */
     private function v2(array $b): array
     {
-        $earnings = array_map(fn ($e) => [
-            'name' => $e['name'],
-            'monthly' => $e['monthly'],
-            'amount' => (float) $e['earned'],
-            'note' => $e['note'] ?? null,
-        ], $b['earnings'] ?? []);
+        $lop = 0.0;
+        $earnings = array_map(function ($e) use (&$lop) {
+            $prorated = ($e['kind'] ?? '') === 'structure' && ! empty($e['prorated']) && $e['monthly'] !== null;
+            if ($prorated) {
+                $lop += max(0, (float) $e['monthly'] - (float) $e['earned']);
+            }
+
+            return ['name' => $e['name'], 'amount' => (float) ($prorated ? $e['monthly'] : $e['earned']), 'note' => $e['note'] ?? null];
+        }, $b['earnings'] ?? []);
+        $lop = round($lop, 2);
 
         $deductions = array_map(fn ($d) => ['name' => $d['name'], 'amount' => (float) $d['amount'], 'note' => $d['note'] ?? null], $b['deductions'] ?? []);
+        if ($lop > 0) {
+            $days = (float) ($b['attendance']['lop_days'] ?? 0);
+            array_unshift($deductions, ['name' => $days > 0 ? 'Loss of pay (' . rtrim(rtrim(number_format($days, 2), '0'), '.') . ' day' . ($days == 1 ? '' : 's') . ')' : 'Loss of pay (unpaid days)',
+                'amount' => $lop, 'note' => null]);
+        }
 
-        return [$earnings, $deductions];
+        return [$earnings, $deductions, $lop];
     }
 
     /** Pre-engine payslips: earnings, OT, structure + statutory deductions and LOP as a deduction. */

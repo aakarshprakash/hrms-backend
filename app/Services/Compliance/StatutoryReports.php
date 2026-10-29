@@ -79,6 +79,12 @@ class StatutoryReports
                 $e = $p->employee;
                 $epfWage = (int) round((float) $p->pf_wage);
                 $ceiling = (int) config('statutory.pf.wage_ceiling', 15000);
+                // PF on arrears is paid in the same challan but filed in a separate arrear ECR,
+                // so the monthly line carries this month's contribution only.
+                $arr = (array) data_get($p->breakdown_json, 'statutory.pf.arrears', []);
+                $arrEmployee = (int) round((float) ($arr['employee'] ?? 0));
+                $arrEps = (int) round((float) ($arr['employer_eps'] ?? 0));
+                $arrEpf = (int) round((float) ($arr['employer_epf'] ?? 0));
 
                 return [
                     'employee_code' => $e?->employee_code,
@@ -88,9 +94,13 @@ class StatutoryReports
                     'epf_wages' => $epfWage,
                     'eps_wages' => (float) $p->eps_employer > 0 ? min($epfWage, $ceiling) : 0,
                     'edli_wages' => min($epfWage, $ceiling),
-                    'epf_contribution' => (int) round((float) $p->pf_employee),
-                    'eps_contribution' => (int) round((float) $p->eps_employer),
-                    'epf_eps_difference' => (int) round((float) $p->pf_employer),
+                    'epf_contribution' => (int) round((float) $p->pf_employee) - $arrEmployee,
+                    'eps_contribution' => (int) round((float) $p->eps_employer) - $arrEps,
+                    'epf_eps_difference' => (int) round((float) $p->pf_employer) - $arrEpf,
+                    'arrear_epf_wages' => (int) round((float) ($arr['wage'] ?? 0)),
+                    'arrear_epf' => $arrEmployee,
+                    'arrear_eps' => $arrEps,
+                    'arrear_epf_eps_difference' => $arrEpf,
                     'ncp_days' => (int) round((float) $p->lop_days),
                     'refund_of_advances' => 0,
                 ];
@@ -272,9 +282,10 @@ class StatutoryReports
         $adminCharges = $pfRows->isEmpty() ? 0 : max(500, (int) round($epfWages * $adminRate / 100));
         $edliCharges = (int) round($edliWages * $edliRate / 100);
 
-        $pfEmployee = (int) $pfRows->sum('epf_contribution');
-        $pfEmployerEpf = (int) $pfRows->sum('epf_eps_difference');
-        $pfEps = (int) $pfRows->sum('eps_contribution');
+        // The challan covers arrears too.
+        $pfEmployee = (int) $pfRows->sum('epf_contribution') + (int) $pfRows->sum('arrear_epf');
+        $pfEmployerEpf = (int) $pfRows->sum('epf_eps_difference') + (int) $pfRows->sum('arrear_epf_eps_difference');
+        $pfEps = (int) $pfRows->sum('eps_contribution') + (int) $pfRows->sum('arrear_eps');
         $esiEmployee = round((float) $esiRows->sum('employee_contribution'), 2);
         $esiEmployer = round((float) $esiRows->sum('employer_contribution'), 2);
 
@@ -290,6 +301,7 @@ class StatutoryReports
             'pf' => [
                 'members' => $pfRows->count(),
                 'epf_wages' => $epfWages,
+                'arrear_epf_wages' => (int) $pfRows->sum('arrear_epf_wages'),
                 'employee_share' => $pfEmployee,
                 'employer_epf' => $pfEmployerEpf,
                 'employer_eps' => $pfEps,
