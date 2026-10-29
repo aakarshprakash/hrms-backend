@@ -8,6 +8,7 @@ use App\Http\Requests\UpdateEmployeeRequest;
 use App\Mail\EmployeeWelcomeMail;
 use App\Models\Employee;
 use App\Models\User;
+use App\Services\Employees\EmployeeCodes;
 use App\Support\Access\RoleGrants;
 use App\Support\Access\Roles;
 use App\Support\Billing\Limits;
@@ -76,6 +77,36 @@ class EmployeeController extends Controller
         ]);
     }
 
+    /** Automatic employee numbering: the settings and the code the next hire would get. */
+    public function codeSettings(EmployeeCodes $codes, TenantContext $context): JsonResponse
+    {
+        return response()->json(['data' => $codes->settings($context->company()) + ['next' => $codes->next()]]);
+    }
+
+    public function updateCodeSettings(Request $request, EmployeeCodes $codes, TenantContext $context): JsonResponse
+    {
+        $v = $request->validate([
+            'auto' => ['required', 'boolean'],
+            'prefix' => ['nullable', 'string', 'max:20', 'regex:/^[A-Za-z0-9\/\-_]*$/'],
+            'digits' => ['required', 'integer', 'min:1', 'max:8'],
+            'start' => ['required', 'integer', 'min:1', 'max:99999999'],
+        ], ['prefix.regex' => 'Use letters, numbers, - / or _ in the prefix.']);
+        $v['prefix'] = strtoupper((string) ($v['prefix'] ?? ''));
+
+        $company = $context->company();
+        $settings = $company->settings ?? [];
+        $settings['employee_code'] = $v;
+        $company->forceFill(['settings' => $settings])->save();
+
+        activity('organisation')->causedBy($request->user())->event('employee_code_settings')->withProperties($v)
+            ->log('Automatic employee codes ' . ($v['auto'] ? 'turned on' : 'turned off'));
+
+        return response()->json([
+            'data' => $codes->settings($company->fresh()) + ['next' => $codes->next($company->fresh())],
+            'message' => $v['auto'] ? 'New employees will be numbered automatically.' : 'Employee codes will be entered by hand.',
+        ]);
+    }
+
     public function store(StoreEmployeeRequest $request, TenantContext $context): JsonResponse
     {
         $this->authorize('create', Employee::class);
@@ -88,6 +119,7 @@ class EmployeeController extends Controller
         $excluded = ['password', 'role', 'create_login', 'password_option', 'send_welcome_email'];
         $attributes = $request->safe()->except($excluded);
         $attributes = $this->withoutUnauthorizedSensitive($request->user(), null, $attributes);
+        $attributes['last_name'] = (string) ($attributes['last_name'] ?? '');
 
         // Resolve (and authorize) the login role before writing anything.
         $role = $request->boolean('create_login')
@@ -96,6 +128,9 @@ class EmployeeController extends Controller
 
         try {
             [$employee, $credentials] = DB::transaction(function () use ($request, $attributes, $role) {
+                if (blank($attributes['employee_code'] ?? null)) {
+                    $attributes['employee_code'] = app(EmployeeCodes::class)->claim();
+                }
                 $employee = Employee::create($attributes);
                 $credentials = null;
 
@@ -145,7 +180,10 @@ class EmployeeController extends Controller
 
         if ($credentials && $request->boolean('send_welcome_email', true)) {
             try {
-                Mail::to($credentials['email'])->send(new EmployeeWelcomeMail($employee, $credentials['password']));
+                // The organisation's own SMTP when it has one, else the platform's.
+                $sender = \App\Support\Mail\SmtpSettings::forCompany($context->id(), $context->company()?->name);
+                $mail = (new EmployeeWelcomeMail($employee, $credentials['password']))->from($sender['from_address'], $sender['from_name']);
+                ($sender['mailer'] ? Mail::mailer($sender['mailer']) : Mail::mailer())->to($credentials['email'])->send($mail);
                 $credentials['email_sent'] = true;
             } catch (\Throwable $e) {
                 report($e);

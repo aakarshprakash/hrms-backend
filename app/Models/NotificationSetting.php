@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\SafeEncrypted;
 use App\Models\Concerns\Audited;
 use App\Models\Concerns\BelongsToCompany;
 use App\Support\Notifications\NotificationEvents;
@@ -25,10 +26,12 @@ class NotificationSetting extends Model
     public const WHATSAPP_PROVIDERS = ['meta' => 'WhatsApp Cloud API (Meta)', 'twilio' => 'Twilio WhatsApp', 'log' => 'Test mode (log only)'];
 
     /** Audited as "changed" only -- credential values never reach the audit log. */
-    public const SENSITIVE = ['sms_credentials', 'whatsapp_credentials'];
+    public const SENSITIVE = ['sms_credentials', 'whatsapp_credentials', 'smtp_credentials'];
 
     protected $fillable = [
         'email_enabled',
+        'smtp_enabled',
+        'smtp_credentials',
         'sms_enabled',
         'sms_provider',
         'sms_credentials',
@@ -38,16 +41,18 @@ class NotificationSetting extends Model
         'events',
     ];
 
-    protected $hidden = ['sms_credentials', 'whatsapp_credentials'];
+    protected $hidden = ['sms_credentials', 'whatsapp_credentials', 'smtp_credentials'];
 
     protected function casts(): array
     {
         return [
             'email_enabled' => 'boolean',
+            'smtp_enabled' => 'boolean',
+            'smtp_credentials' => SafeEncrypted::class . ':array',
             'sms_enabled' => 'boolean',
             'whatsapp_enabled' => 'boolean',
-            'sms_credentials' => 'encrypted:array',
-            'whatsapp_credentials' => 'encrypted:array',
+            'sms_credentials' => SafeEncrypted::class . ':array',
+            'whatsapp_credentials' => SafeEncrypted::class . ':array',
             'events' => 'array',
         ];
     }
@@ -95,6 +100,7 @@ class NotificationSetting extends Model
         return match ($channel) {
             'sms' => (array) ($this->sms_credentials ?? []),
             'whatsapp' => (array) ($this->whatsapp_credentials ?? []),
+            'smtp' => (array) ($this->smtp_credentials ?? []),
             default => [],
         };
     }

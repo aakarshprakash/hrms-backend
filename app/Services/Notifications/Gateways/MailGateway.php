@@ -4,9 +4,10 @@ namespace App\Services\Notifications\Gateways;
 
 use App\Mail\NotificationMail;
 use App\Models\NotificationLog;
+use App\Support\Mail\SmtpSettings;
 use Illuminate\Support\Facades\Mail;
 
-/** Email through the platform's configured mailer, from the tenant's name. */
+/** Email through the organisation's own SMTP if it has one, else the platform's mailer under the organisation's name. */
 class MailGateway implements MessageGateway
 {
     public function name(): string
@@ -27,11 +28,10 @@ class MailGateway implements MessageGateway
             companyName: $v['company'] ?? null,
         );
 
-        if (! empty($v['company'])) {
-            $mail->from(config('mail.from.address'), $v['company'] . ' via ' . config('app.name'));
-        }
+        $sender = SmtpSettings::forCompany($log->company_id, $v['company'] ?? null);
+        $mail->from($sender['from_address'], $sender['from_name']);
 
-        Mail::to($log->recipient)->send($mail);
+        ($sender['mailer'] ? Mail::mailer($sender['mailer']) : Mail::mailer())->to($log->recipient)->send($mail);
 
         return null;
     }

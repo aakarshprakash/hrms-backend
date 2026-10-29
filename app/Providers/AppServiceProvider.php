@@ -44,6 +44,8 @@ class AppServiceProvider extends AuthServiceProvider
     public function boot(): void
     {
         Builder::defaultStringLength(191);
+        // SMTP saved in the platform admin portal replaces the .env mailer.
+        \App\Support\Mail\SmtpSettings::applyPlatformDefault();
         $this->registerPolicies();
 
         // Platform abilities belong to the platform operator alone. Inside a

@@ -157,7 +157,38 @@ class PayrollExtrasTest extends TestCase
         $processed = app(PayrollRunService::class)->process($target, $this->payroll);
         $slip = Payslip::where('payroll_run_id', $processed->id)->where('employee_id', $emp->id)->first();
         $this->assertEquals(12000 + 4800 + 5600, (float) $slip->gross_pay);
-        $this->assertEquals(1800, (float) $slip->pf_employee); // PF wage 12,000 + 4,000 arrears, capped at ₹15,000
+        // PF on September's 12,000 plus PF on the 4,000 arrears -- not squeezed under September's own ceiling.
+        $this->assertEquals(1440 + 480, (float) $slip->pf_employee);
+        $this->assertEquals(480, $this->deduction($processed, $emp->id, 'PF_ARR')['amount']);
+    }
+
+    public function test_pf_on_arrears_respects_the_ceiling_of_each_month(): void
+    {
+        ['employee' => $crossing] = $this->employee(['basic' => 14000]);  // revised to 16,000: crosses ₹15,000
+        ['employee' => $above] = $this->employee(['basic' => 20000]);     // revised to 25,000: above it throughout
+        $this->processMonth(7);
+        $this->processMonth(8);
+
+        foreach ([[$crossing, 16000], [$above, 25000]] as [$emp, $basic]) {
+            SalaryStructure::where('employee_id', $emp->id)->update(['effective_to' => '2026-06-30']);
+            SalaryStructure::create(['employee_id' => $emp->id, 'component_id' => $this->components['basic']->id, 'amount' => $basic, 'effective_from' => '2026-07-01']);
+        }
+
+        $target = PayrollRun::create(['branch_id' => $this->branch->id, 'month' => 9, 'year' => 2026]);
+        $q = ['payroll_run_id' => $target->id, 'from' => '2026-07', 'to' => '2026-08'];
+        $rows = collect($this->actingAs($this->payroll, 'sanctum')->getJson('/api/payroll/arrears?' . http_build_query($q))->json('data.rows'))->keyBy('employee_id');
+        $this->assertEquals(4000, $rows[$crossing->id]['arrears']);
+        $this->assertEquals(2000, $rows[$crossing->id]['pf_part']);  // only up to 15,000 in July and August
+        $this->assertEquals(10000, $rows[$above->id]['arrears']);
+        $this->assertEquals(0, $rows[$above->id]['pf_part']);        // already at the ceiling
+
+        $this->actingAs($this->payroll, 'sanctum')->postJson('/api/payroll/arrears/apply', $q)->assertOk();
+        $processed = app(PayrollRunService::class)->process($target, $this->payroll);
+
+        $this->assertEquals(240, $this->deduction($processed, $crossing->id, 'PF_ARR')['amount']); // 12% of 2,000
+        $this->assertEquals(1800 + 240, (float) Payslip::where('payroll_run_id', $processed->id)->where('employee_id', $crossing->id)->value('pf_employee'));
+        $this->assertNull($this->deduction($processed, $above->id, 'PF_ARR'));
+        $this->assertEquals(1800, (float) Payslip::where('payroll_run_id', $processed->id)->where('employee_id', $above->id)->value('pf_employee'));
     }
 
     public function test_an_approved_old_regime_declaration_reduces_tds(): void

@@ -16,7 +16,10 @@ use Illuminate\Support\Facades\DB;
  * in the range is recomputed with today's salary structure (same attendance,
  * same rules) and compared with what its payslip actually paid. The
  * difference in salary earnings is paid in a later run as two adjustments --
- * the part on PF wages (so PF is deducted on it) and the rest.
+ * the part on PF wages and the rest. PF on arrears follows the months they
+ * belong to: the PF wage added is the rise in each month's PF wage (already
+ * held to that month's ₹15,000 ceiling when PF is restricted to it), and the
+ * paying run charges PF on exactly that, whatever its own month's wage.
  */
 class ArrearsService
 {
@@ -40,6 +43,7 @@ class ArrearsService
         $lines = collect();
         foreach ($runs as $run) {
             $context = $this->engine->contextFor($run);
+            $ceiling = (float) (data_get($context['rules']->get('PF')?->config_json, 'wage_ceiling') ?? config('statutory.pf.wage_ceiling'));
             $payslips = Payslip::where('payroll_run_id', $run->id)
                 ->when($employeeIds, fn ($q) => $q->whereIn('employee_id', $employeeIds))->get();
             $employees = Employee::whereIn('id', $payslips->pluck('employee_id'))->get()->keyBy('id');
@@ -57,11 +61,13 @@ class ArrearsService
                     continue;
                 }
                 $pfDiff = round(max(0, (float) $new['pf_wage'] - (float) $old->pf_wage), 2);
+                $epsDiff = round(max(0, min((float) $new['pf_wage'], $ceiling) - min((float) $old->pf_wage, $ceiling)), 2);
                 $lines->push([
                     'employee_id' => $employee->id,
                     'month' => CarbonImmutable::create($run->year, $run->month, 1)->format('M Y'),
                     'paid' => $paid, 'due' => $due, 'difference' => $diff,
                     'pf_part' => $diff > 0 ? min($pfDiff, $diff) : 0,
+                    'eps_part' => $diff > 0 ? min($epsDiff, $pfDiff, $diff) : 0,
                 ]);
             }
         }
@@ -80,7 +86,8 @@ class ArrearsService
                 'paid' => round($months->sum('paid'), 2),
                 'due' => round($months->sum('due'), 2),
                 'arrears' => $total,
-                'pf_part' => $total > 0 ? round(min($months->sum('pf_part'), $total), 2) : 0,
+                'pf_part' => $pfPart = ($total > 0 ? round(min($months->sum('pf_part'), $total), 2) : 0),
+                'eps_part' => round(min($months->sum('eps_part'), $pfPart), 2),
             ];
         })->sortBy('name')->values();
 
@@ -104,11 +111,12 @@ class ArrearsService
                 PayrollRunAdjustment::where('payroll_run_id', $target->id)->where('employee_id', $row['employee_id'])
                     ->whereIn('component_id', [$pf->id, $other->id])->delete();
                 $rest = round($row['arrears'] - $row['pf_part'], 2);
-                foreach ([[$pf, $row['pf_part']], [$other, $rest]] as [$component, $amount]) {
+                $pfMeta = ['pf_arrear' => ['pf_wage' => $row['pf_part'], 'eps_wage' => $row['eps_part'] ?? 0]];
+                foreach ([[$pf, $row['pf_part'], $pfMeta], [$other, $rest, null]] as [$component, $amount, $meta]) {
                     if ($amount > 0) {
                         PayrollRunAdjustment::create([
                             'payroll_run_id' => $target->id, 'employee_id' => $row['employee_id'], 'component_id' => $component->id,
-                            'amount' => $amount, 'note' => "Arrears {$label}", 'created_by' => $by->id,
+                            'amount' => $amount, 'note' => "Arrears {$label}", 'meta' => $meta, 'created_by' => $by->id,
                         ]);
                     }
                 }

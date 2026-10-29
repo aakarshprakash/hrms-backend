@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\SafeEncrypted;
 use App\Models\Concerns\Audited;
 use App\Models\Concerns\BelongsToCompany;
 use Illuminate\Database\Eloquent\Model;
@@ -35,7 +36,7 @@ class BiometricConfig extends Model
     protected function casts(): array
     {
         return [
-            'api_token' => 'encrypted',
+            'api_token' => SafeEncrypted::class,
             'enabled' => 'boolean',
             'last_synced_at' => 'datetime',
         ];

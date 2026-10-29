@@ -111,8 +111,9 @@ class SubscriptionService
 
         // A live paid subscription: the new plan applies from the next invoice.
         if ($current && in_array($current->status, ['active', 'past_due'], true) && $current->current_period_end) {
+            // Choosing a plan online moves a licence customer to invoiced renewals.
             $current->update(['plan_id' => $plan->id, 'billing_cycle' => $cycle, 'plan_confirmed_at' => now(),
-                'cancel_at_period_end' => false, 'custom_monthly_price' => null]);
+                'cancel_at_period_end' => false, 'custom_monthly_price' => null, 'billing_mode' => 'online']);
             $this->resolver->forget($company->id);
 
             return $current->fresh('plan');
@@ -189,6 +190,18 @@ class SubscriptionService
                     }
 
                     if (in_array($s->status, ['active', 'past_due'], true) && $s->current_period_end && $s->current_period_end->lt($today)) {
+                        // A licence isn't invoiced: once its months run out it's past due for the grace days, then expires.
+                        if ($s->billing_mode === 'license') {
+                            if ($s->current_period_end->lt($today->subDays((int) config('billing.grace_days', 7)))) {
+                                $s->update(['status' => 'expired']);
+                                $stats['cancelled']++;
+                            } elseif ($s->status === 'active') {
+                                $s->update(['status' => 'past_due']);
+                                $stats['past_due']++;
+                            }
+
+                            return;
+                        }
                         if ($s->cancel_at_period_end) {
                             $s->update(['status' => 'cancelled']);
                             $stats['cancelled']++;

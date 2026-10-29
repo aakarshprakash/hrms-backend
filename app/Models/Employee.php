@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\SafeEncrypted;
 use App\Models\Concerns\Audited;
 use App\Models\Concerns\BelongsToCompany;
 use App\Support\Access\Roles;
@@ -59,6 +60,7 @@ class Employee extends Model implements HasMedia
         'date_of_leaving',
         'notice_period_days',
         'work_location',
+        'work_location_id',
         'notes',
         'weekly_off_days',
         'geofence_mode',
@@ -86,9 +88,9 @@ class Employee extends Model implements HasMedia
             'date_of_joining' => 'date',
             'probation_end_date' => 'date',
             'date_of_leaving' => 'date',
-            'national_id' => 'encrypted',
-            'tax_id' => 'encrypted',
-            'bank_account_number' => 'encrypted',
+            'national_id' => SafeEncrypted::class,
+            'tax_id' => SafeEncrypted::class,
+            'bank_account_number' => SafeEncrypted::class,
             'weekly_off_days' => 'array',
             'pf_opted_out' => 'boolean',
             'pt_exempt' => 'boolean',
@@ -186,6 +188,21 @@ class Employee extends Model implements HasMedia
     public function designation()
     {
         return $this->belongsTo(Designation::class);
+    }
+
+    public function workLocation()
+    {
+        return $this->belongsTo(WorkLocation::class);
+    }
+
+    protected static function booted(): void
+    {
+        // The text column mirrors the chosen master, so lists and exports keep showing the name.
+        static::saving(function (Employee $e) {
+            if ($e->isDirty('work_location_id')) {
+                $e->work_location = $e->work_location_id ? WorkLocation::whereKey($e->work_location_id)->value('name') : null;
+            }
+        });
     }
 
     public function reportingManager()

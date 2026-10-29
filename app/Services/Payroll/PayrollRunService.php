@@ -234,6 +234,7 @@ class PayrollRunService
             'professional_tax' => $sum('professional_tax'),
             'tds' => $sum('tds'),
             'lop_days' => $sum('lop_days'),
+            'lop_amount' => round((float) $rows->sum(fn ($r) => (float) data_get($r, 'breakdown_json.totals.lop', 0)), 2),
             'warnings' => $rows->sum(fn ($r) => count($r['warnings'] ?? [])),
         ];
     }

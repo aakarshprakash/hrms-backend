@@ -75,10 +75,12 @@ class ComplianceController extends Controller
 
         [$header, $rows] = match ($report) {
             'pf' => [
-                ['Employee Code', 'UAN', 'Member Name', 'Gross Wages', 'EPF Wages', 'EPS Wages', 'EDLI Wages', 'EPF (Employee)', 'EPS (Employer)', 'EPF (Employer)', 'NCP Days'],
+                ['Employee Code', 'UAN', 'Member Name', 'Gross Wages', 'EPF Wages', 'EPS Wages', 'EDLI Wages', 'EPF (Employee)', 'EPS (Employer)', 'EPF (Employer)', 'NCP Days',
+                    'Arrear EPF Wages', 'Arrear EPF (Employee)', 'Arrear EPS (Employer)', 'Arrear EPF (Employer)'],
                 collect($this->reports->pf($payslips))->map(fn ($r) => [
                     $r['employee_code'], $r['uan'], $r['name'], $r['gross_wages'], $r['epf_wages'], $r['eps_wages'], $r['edli_wages'],
                     $r['epf_contribution'], $r['eps_contribution'], $r['epf_eps_difference'], $r['ncp_days'],
+                    $r['arrear_epf_wages'], $r['arrear_epf'], $r['arrear_eps'], $r['arrear_epf_eps_difference'],
                 ]),
             ],
             // Column titles exactly as the ESIC monthly-contribution upload template has them.
@@ -125,7 +127,7 @@ class ComplianceController extends Controller
         $due = fn ($d) => $d ? CarbonImmutable::parse($d)->format('d M Y') : '—';
 
         [$numeric, $boxes] = match ($report) {
-            'pf' => [range(3, 10), [
+            'pf' => [range(3, 14), [
                 'Members' => $summary['pf']['members'], 'EPF wages' => $inr($summary['pf']['epf_wages']),
                 'Employee share' => $inr($summary['pf']['employee_share']), 'Employer EPF + EPS' => $inr($summary['pf']['employer_epf'] + $summary['pf']['employer_eps']),
                 'EDLI + admin' => $inr($summary['pf']['edli_charges'] + $summary['pf']['admin_charges']), 'Challan total' => $inr($summary['pf']['total']),

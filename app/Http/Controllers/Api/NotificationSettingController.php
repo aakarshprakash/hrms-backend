@@ -7,6 +7,7 @@ use App\Models\NotificationLog;
 use App\Models\NotificationSetting;
 use App\Services\Notifications\NotificationDispatcher;
 use App\Support\Billing\Features;
+use App\Support\Mail\SmtpSettings;
 use App\Support\Notifications\NotificationEvents;
 use App\Support\Phone;
 use App\Support\Tenancy\TenantContext;
@@ -37,7 +38,7 @@ class NotificationSettingController extends Controller
     ];
 
     /** Fields shown back unmasked (not secrets). */
-    private const PUBLIC_FIELDS = ['sender_id', 'from', 'phone_number_id'];
+    private const PUBLIC_FIELDS = ['sender_id', 'from', 'phone_number_id', 'host', 'port', 'encryption', 'username', 'from_address', 'from_name'];
 
     public function show(): JsonResponse
     {
@@ -52,6 +53,8 @@ class NotificationSettingController extends Controller
                 'whatsapp' => NotificationSetting::WHATSAPP_PROVIDERS,
             ],
             'credential_fields' => self::CREDENTIAL_FIELDS,
+            'smtp_encryptions' => SmtpSettings::ENCRYPTIONS,
+            'platform_smtp' => SmtpSettings::platform() !== null,
             'plan_allows_messaging' => Features::has($company, 'notifications'),
         ]);
     }
@@ -63,6 +66,15 @@ class NotificationSettingController extends Controller
 
         $validated = $request->validate([
             'email_enabled' => 'sometimes|boolean',
+            'smtp_enabled' => 'sometimes|boolean',
+            'smtp_credentials' => 'sometimes|array',
+            'smtp_credentials.host' => 'nullable|string|max:191',
+            'smtp_credentials.port' => 'nullable|integer|min:1|max:65535',
+            'smtp_credentials.encryption' => ['nullable', Rule::in(array_keys(SmtpSettings::ENCRYPTIONS))],
+            'smtp_credentials.username' => 'nullable|string|max:191',
+            'smtp_credentials.password' => 'nullable|string|max:500',
+            'smtp_credentials.from_address' => 'nullable|email|max:191',
+            'smtp_credentials.from_name' => 'nullable|string|max:191',
             'sms_enabled' => 'sometimes|boolean',
             'sms_provider' => ['sometimes', 'nullable', Rule::in(array_keys(NotificationSetting::SMS_PROVIDERS))],
             'sms_credentials' => 'sometimes|array',
@@ -85,7 +97,7 @@ class NotificationSettingController extends Controller
 
         $settings = NotificationSetting::query()->firstOrNew(['company_id' => $company->id]);
 
-        foreach (['email_enabled', 'sms_enabled', 'sms_provider', 'whatsapp_enabled', 'whatsapp_provider'] as $field) {
+        foreach (['email_enabled', 'smtp_enabled', 'sms_enabled', 'sms_provider', 'whatsapp_enabled', 'whatsapp_provider'] as $field) {
             if (array_key_exists($field, $validated)) {
                 $settings->{$field} = $validated[$field];
             }
@@ -100,6 +112,14 @@ class NotificationSettingController extends Controller
                 );
             }
         }
+
+        if (array_key_exists('smtp_credentials', $validated)) {
+            $settings->smtp_credentials = $this->mergeCredentials((array) ($settings->smtp_credentials ?? []),
+                array_map(fn ($v) => $v === null ? null : (string) $v, $validated['smtp_credentials']), array_flip(SmtpSettings::FIELDS));
+        }
+        $smtp = (array) ($settings->smtp_credentials ?? []);
+        abort_if($settings->smtp_enabled && (empty($smtp['host']) || empty($smtp['from_address'])), 422,
+            'Enter at least the SMTP host and the From address to use your own mail server.');
 
         if (array_key_exists('events', $validated)) {
             $events = [];
@@ -224,6 +244,8 @@ class NotificationSettingController extends Controller
 
         return [
             'email_enabled' => (bool) $settings->email_enabled,
+            'smtp_enabled' => (bool) $settings->smtp_enabled,
+            'smtp_credentials' => $mask('smtp'),
             'sms_enabled' => (bool) $settings->sms_enabled,
             'sms_provider' => $settings->sms_provider,
             'sms_credentials' => $mask('sms'),
