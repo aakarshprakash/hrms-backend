@@ -8,6 +8,7 @@ use App\Models\Branch;
 use App\Models\Employee;
 use App\Models\Holiday;
 use App\Models\Leave;
+use App\Services\Attendance\Reports\AttendanceReports;
 use Carbon\Carbon;
 use Carbon\CarbonPeriod;
 use Illuminate\Http\Request;
@@ -16,6 +17,102 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class AttendanceReportController extends Controller
 {
+    /** Report types and filter choices for the reports screen. */
+    public function options(Request $request)
+    {
+        return response()->json(['data' => AttendanceReports::filterOptions($request->user()) + ['max_days' => AttendanceReports::MAX_DAYS]]);
+    }
+
+    /** Any report as JSON. Table reports are paged (totals cover every row). */
+    public function report(Request $request, string $type, AttendanceReports $reports)
+    {
+        $report = $reports->build($type, $this->reportFilters($request), $request->user());
+        $rows = collect($report['rows']);
+
+        if ($report['layout'] === 'table') {
+            $perPage = min(max($request->integer('per_page', 100), 10), 500);
+            $page = max(1, $request->integer('page', 1));
+            $report['meta'] = ['current_page' => $page, 'last_page' => max(1, (int) ceil($rows->count() / $perPage)), 'total' => $rows->count(), 'per_page' => $perPage];
+            $report['rows'] = $rows->forPage($page, $perPage)->values();
+        }
+
+        return response()->json(['data' => $report]);
+    }
+
+    /** The whole report as CSV (opens in Excel) or a printable PDF. */
+    public function export(Request $request, string $type, AttendanceReports $reports)
+    {
+        $format = $request->validate(['format' => ['required', 'in:csv,pdf']])['format'];
+        $filters = $this->reportFilters($request);
+        $report = $reports->build($type, $filters, $request->user());
+        $name = sprintf('%s-%s-to-%s', str_replace('_', '-', $type), $report['period']['from'], $report['period']['to']);
+
+        if ($format === 'pdf') {
+            $company = app(\App\Support\Tenancy\TenantContext::class)->company();
+            $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.attendance', [
+                'report' => $report,
+                'company' => $company,
+                'filters' => $this->filterLabels($filters),
+                'generatedBy' => $request->user()->name,
+            ])->setPaper('a4', 'landscape');
+
+            return response($pdf->output(), 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => "attachment; filename=\"{$name}.pdf\""]);
+        }
+
+        return response()->streamDownload(function () use ($report) {
+            $out = fopen('php://output', 'w');
+            fwrite($out, "\xEF\xBB\xBF"); // UTF-8 BOM so Excel reads ₹ and names correctly
+            $columns = $report['columns'];
+            if ($report['layout'] === 'grid') {
+                $head = [$columns[0]['label'], $columns[1]['label']];
+                foreach ($report['dates'] as $d) {
+                    $head[] = Carbon::parse($d)->format('d');
+                }
+                fputcsv($out, array_merge($head, array_map(fn ($c) => $c['label'], array_slice($columns, 2))), ',', '"', '');
+                foreach ($report['rows'] as $row) {
+                    $line = [$row['employee_code'], $row['name']];
+                    foreach ($report['dates'] as $d) {
+                        $line[] = $row['cells'][$d]['code'] ?? '';
+                    }
+                    foreach (array_slice($columns, 2) as $c) {
+                        $line[] = $row[$c['key']] ?? '';
+                    }
+                    fputcsv($out, $line, ',', '"', '');
+                }
+            } else {
+                fputcsv($out, array_map(fn ($c) => $c['label'], $columns), ',', '"', '');
+                foreach ($report['rows'] as $row) {
+                    fputcsv($out, array_map(fn ($c) => $row[$c['key']] ?? '', $columns), ',', '"', '');
+                }
+            }
+            fclose($out);
+        }, "{$name}.csv", ['Content-Type' => 'text/csv; charset=UTF-8']);
+    }
+
+    private function reportFilters(Request $request): array
+    {
+        $this->requestedBranchId();
+
+        return $request->validate([
+            'from' => ['required', 'date'],
+            'to' => ['required', 'date'],
+            'branch_id' => ['nullable', 'integer', 'exists:branches,id'],
+            'department_id' => ['nullable', 'integer', 'exists:departments,id'],
+            'employee_id' => ['nullable', 'integer', 'exists:employees,id'],
+            'status' => ['nullable', 'string', 'in:' . implode(',', array_keys(AttendanceReports::STATUS_LABELS))],
+        ]);
+    }
+
+    private function filterLabels(array $filters): array
+    {
+        return array_filter([
+            'Branch' => ! empty($filters['branch_id']) ? Branch::find($filters['branch_id'])?->name : 'All branches',
+            'Department' => ! empty($filters['department_id']) ? \App\Models\Department::find($filters['department_id'])?->name : null,
+            'Employee' => ! empty($filters['employee_id']) ? Employee::find($filters['employee_id'])?->full_name : null,
+            'Status' => ! empty($filters['status']) ? AttendanceReports::STATUS_LABELS[$filters['status']] : null,
+        ]);
+    }
+
     private function assertCanView(Request $request): void
     {
         // attendance.view is enforced on the route; here, only the branch filter.

@@ -73,6 +73,12 @@ class AppServiceProvider extends AuthServiceProvider
 
         RateLimiter::for('signup', fn (Request $request) => Limit::perHour(5)->by($request->ip()));
 
+        // Sign-up codes: a few sends / guesses per email, and a ceiling per IP.
+        RateLimiter::for('signup-otp', fn (Request $request) => [
+            Limit::perHour(10)->by('otp|' . strtolower((string) $request->input('email'))),
+            Limit::perHour(30)->by('otp-ip|' . $request->ip()),
+        ]);
+
         RateLimiter::for('api', fn (Request $request) => Limit::perMinute(300)->by($request->user()?->id ?: $request->ip()));
     }
 }

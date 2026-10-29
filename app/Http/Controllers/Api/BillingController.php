@@ -5,10 +5,13 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Branch;
 use App\Models\Invoice;
+use App\Models\Payment;
 use App\Models\Plan;
 use App\Services\Billing\InvoiceService;
+use App\Services\Billing\PaymentService;
 use App\Services\Billing\RazorpayGateway;
 use App\Services\Billing\SubscriptionService;
+use App\Support\Billing\Cycles;
 use App\Support\Tenancy\TenantContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
@@ -30,12 +33,14 @@ class BillingController extends Controller
         $company = app(TenantContext::class)->company();
         $subscription = $this->subscriptions->current($company);
         $employees = $this->invoices->activeEmployees($company->id);
-        $yearlyMonths = (int) config('billing.yearly_months_charged', 10);
+        $yearlyMonths = (int) Cycles::monthsCharged('yearly');
 
         $plans = Plan::where('is_public', true)->where('is_active', true)->orderBy('sort_order')->get()
             ->map(fn (Plan $p) => $p->only(['code', 'name', 'description', 'base_price', 'per_employee_price', 'included_employees', 'features', 'limits']) + [
                 'monthly_estimate' => $p->monthlyPriceFor($employees),
                 'yearly_estimate' => round($p->monthlyPriceFor($employees) * $yearlyMonths, 2),
+                // What one period of each cycle costs at today's headcount, before GST.
+                'estimates' => collect(Cycles::keys())->mapWithKeys(fn ($c) => [$c => round($p->monthlyPriceFor($employees) * Cycles::monthsCharged($c), 2)]),
             ]);
 
         $next = null;
@@ -62,6 +67,8 @@ class BillingController extends Controller
             'bank_details' => config('billing.seller.bank_details'),
             'billing_details' => $company->only(['name', 'legal_name', 'gstin', 'email', 'address_line1', 'address_line2', 'city', 'state', 'postal_code']),
             'yearly_months_charged' => $yearlyMonths,
+            'cycles' => Cycles::all(),
+            'gst_rate' => (float) config('billing.gst_rate', 18),
         ]]);
     }
 
@@ -69,22 +76,71 @@ class BillingController extends Controller
     {
         $validated = $request->validate([
             'plan_code' => ['required', Rule::exists('plans', 'code')->where('is_public', true)->where('is_active', true)],
-            'billing_cycle' => 'required|in:monthly,yearly',
+            'billing_cycle' => ['required', Rule::in(Cycles::keys())],
+            'start_now' => 'sometimes|boolean',
         ]);
 
         $company = app(TenantContext::class)->company();
         $plan = Plan::where('code', $validated['plan_code'])->firstOrFail();
-        $subscription = $this->subscriptions->choosePlan($company, $plan, $validated['billing_cycle']);
+        $subscription = $this->subscriptions->choosePlan($company, $plan, $validated['billing_cycle'], (bool) ($validated['start_now'] ?? false));
 
         activity('billing')->causedBy($request->user())->performedOn($subscription)->event('plan_chosen')
             ->withProperties(['plan' => $plan->code, 'cycle' => $validated['billing_cycle']])->log("Chose the {$plan->name} plan");
 
+        // A paid period that just started: hand back its invoice so it can be paid straight away.
+        $invoice = $subscription->status === 'active'
+            ? Invoice::where('subscription_id', $subscription->id)->where('status', 'issued')->latest('id')->first()
+            : null;
+
         return response()->json([
             'data' => $subscription,
+            'invoice' => $invoice,
             'message' => $subscription->status === 'trialing'
                 ? "{$plan->name} it is — billing starts when your trial ends."
                 : "You’re on {$plan->name}.",
         ]);
+    }
+
+    /** Open Razorpay Checkout for an invoice. */
+    public function checkout(Invoice $invoice, PaymentService $payments): JsonResponse
+    {
+        return response()->json(['data' => $payments->checkout($invoice)]);
+    }
+
+    /** Checkout's success callback, verified by signature. */
+    public function verifyPayment(Request $request, PaymentService $payments): JsonResponse
+    {
+        $validated = $request->validate([
+            'razorpay_order_id' => 'required|string|max:64',
+            'razorpay_payment_id' => 'required|string|max:64',
+            'razorpay_signature' => 'required|string|max:128',
+        ]);
+
+        // The order must belong to this organisation.
+        abort_unless(Payment::where('gateway_order_id', $validated['razorpay_order_id'])
+            ->where('company_id', app(TenantContext::class)->id())->exists(), 404);
+
+        $payment = $payments->confirm($validated['razorpay_order_id'], $validated['razorpay_payment_id'], $validated['razorpay_signature']);
+        activity('billing')->causedBy($request->user())->event('payment_received')
+            ->withProperties(['payment_id' => $payment->gateway_payment_id, 'amount' => $payment->amount])->log('Paid online');
+
+        return response()->json(['data' => $payment, 'message' => 'Payment received — thank you!']);
+    }
+
+    /** A failed / dismissed Checkout attempt, for the record. */
+    public function paymentFailed(Request $request, PaymentService $payments): JsonResponse
+    {
+        $validated = $request->validate([
+            'razorpay_order_id' => 'required|string|max:64',
+            'razorpay_payment_id' => 'nullable|string|max:64',
+            'error' => 'nullable|string|max:500',
+        ]);
+        abort_unless(Payment::where('gateway_order_id', $validated['razorpay_order_id'])
+            ->where('company_id', app(TenantContext::class)->id())->exists(), 404);
+
+        $payments->failed($validated['razorpay_order_id'], $validated['razorpay_payment_id'] ?? null, $validated['error'] ?? null);
+
+        return response()->json(['ok' => true]);
     }
 
     public function cancel(Request $request): JsonResponse

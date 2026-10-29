@@ -36,12 +36,19 @@ use App\Http\Controllers\Api\IssuedCertificateController;
 use App\Http\Controllers\Api\LeaveBalanceController;
 use App\Http\Controllers\Api\LeaveController;
 use App\Http\Controllers\Api\LeaveTypeController;
+use App\Http\Controllers\Api\LoanController;
+use App\Http\Controllers\Api\HelpdeskController;
+use App\Http\Controllers\Api\GeofenceController;
+use App\Http\Controllers\Api\AnnouncementController;
+use App\Http\Controllers\Api\BonusArrearsController;
+use App\Http\Controllers\Api\TaxDeclarationController;
 use App\Http\Controllers\Api\OvertimeRequestController;
 use App\Http\Controllers\Api\OvertimeRuleController;
 use App\Http\Controllers\Api\PayrollAdjustmentController;
 use App\Http\Controllers\Api\PayrollRunController;
 use App\Http\Controllers\Api\PayslipController;
 use App\Http\Controllers\Api\Platform\PlatformCompanyController;
+use App\Http\Controllers\Api\Platform\PlatformRevenueController;
 use App\Http\Controllers\Api\PublicCertificateController;
 use App\Http\Controllers\Api\QuickSetupController;
 use App\Http\Controllers\Api\RegularizationController;
@@ -84,6 +91,8 @@ Route::middleware('throttle:login')->group(function () {
 // Public: what the login page may offer, self-serve sign-up, payment webhook.
 Route::get('/public/config', [PublicSignupController::class, 'config'])->middleware('throttle:60,1');
 Route::post('/auth/signup', [PublicSignupController::class, 'signup'])->middleware('throttle:signup');
+Route::post('/auth/signup/send-code', [PublicSignupController::class, 'sendCode'])->middleware('throttle:signup-otp');
+Route::post('/auth/signup/verify-code', [PublicSignupController::class, 'verifyCode'])->middleware('throttle:signup-otp');
 Route::post('/billing/razorpay/webhook', [PublicSignupController::class, 'razorpayWebhook'])->middleware('throttle:120,1');
 
 // Public certificate verification (no auth)
@@ -118,6 +127,13 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
         Route::post('/companies/{company}/invoices', [PlatformBillingController::class, 'issueInvoice']);
         Route::post('/invoices/{invoice}/mark-paid', [PlatformBillingController::class, 'markPaid']);
         Route::post('/invoices/{invoice}/void', [PlatformBillingController::class, 'void']);
+
+        // Revenue: MRR, collections, and every client's subscriptions, invoices and payments.
+        Route::get('/billing/overview', [PlatformRevenueController::class, 'overview']);
+        Route::get('/billing/subscriptions', [PlatformRevenueController::class, 'subscriptions']);
+        Route::get('/billing/invoices', [PlatformRevenueController::class, 'invoices']);
+        Route::get('/billing/payments', [PlatformRevenueController::class, 'payments']);
+        Route::get('/invoices/{invoice}/pdf', [PlatformRevenueController::class, 'invoicePdf']);
     });
 
     // ── Dashboard ─────────────────────────────────────────────────────────
@@ -135,6 +151,17 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
     Route::middleware('permission:settings.manage')->group(function () {
         Route::post('/branches', [BranchController::class, 'store']);
         Route::put('/branches/{branch}', [BranchController::class, 'update']);
+        // Geo-fencing: branch switch, sites, and who must punch where.
+        Route::middleware('feature:geofence')->group(function () {
+            Route::get('/geofences', [GeofenceController::class, 'index']);
+            Route::put('/geofence/settings', [GeofenceController::class, 'master']);
+            Route::put('/branches/{branch}/geofence', [GeofenceController::class, 'settings']);
+            Route::post('/branches/{branch}/geo-sites', [GeofenceController::class, 'storeSite']);
+            Route::put('/geo-sites/{site}', [GeofenceController::class, 'updateSite']);
+            Route::delete('/geo-sites/{site}', [GeofenceController::class, 'destroySite']);
+            Route::get('/geofence/employees', [GeofenceController::class, 'employees']);
+            Route::post('/geofence/employees', [GeofenceController::class, 'assign']);
+        });
         Route::delete('/branches/{branch}', [BranchController::class, 'destroy']);
         Route::post('/quick-setup', [QuickSetupController::class, 'seed']);
         Route::get('/industry-templates', [QuickSetupController::class, 'templates']);
@@ -249,6 +276,10 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
         Route::get('attendance/reports/monthly-punches', [AttendanceReportController::class, 'monthlyPunches']);
         Route::get('attendance/reports/monthly-punches/export', [AttendanceReportController::class, 'monthlyPunchesExport']);
         Route::get('attendance/reports/muster-roll', [AttendanceReportController::class, 'musterRoll']);
+        // Unified reports: one engine, any date range, CSV / PDF export.
+        Route::get('attendance/report-options', [AttendanceReportController::class, 'options']);
+        Route::get('attendance/report/{type}', [AttendanceReportController::class, 'report'])->where('type', '[a-z_]+');
+        Route::get('attendance/report/{type}/export', [AttendanceReportController::class, 'export'])->where('type', '[a-z_]+');
         Route::get('attendance/exceptions', [AttendanceExceptionController::class, 'index']);
     });
     Route::post('attendance/manual', [AttendanceController::class, 'manualUpsert'])->middleware('permission:attendance.manage');
@@ -312,6 +343,8 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
     // ── Statutory compliance (finalized payroll → PF / ESI / PT / TDS files) ──
     Route::middleware(['permission:payroll.view|payroll.manage|reports.view', 'feature:statutory'])->group(function () {
         Route::get('compliance/summary', [ComplianceController::class, 'summary']);
+        Route::get('compliance/form16', [ComplianceController::class, 'form16List']);
+        Route::get('compliance/form16/pdf', [ComplianceController::class, 'form16']);
         Route::get('compliance/{report}/preview', [ComplianceController::class, 'preview']);
         Route::get('compliance/{report}/download', [ComplianceController::class, 'download']);
     });
@@ -326,6 +359,29 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
         Route::get('billing/invoices', [BillingController::class, 'invoices']);
         Route::get('billing/invoices/{invoice}/pdf', [BillingController::class, 'invoicePdf']);
         Route::post('billing/invoices/{invoice}/pay', [BillingController::class, 'pay']);
+        Route::post('billing/invoices/{invoice}/checkout', [BillingController::class, 'checkout']);
+        Route::post('billing/payments/verify', [BillingController::class, 'verifyPayment']);
+        Route::post('billing/payments/failed', [BillingController::class, 'paymentFailed']);
+    });
+
+    // ── Employee care: helpdesk & announcements ──────────────────────────
+    Route::get('helpdesk/meta', [HelpdeskController::class, 'meta']);
+    Route::get('helpdesk/tickets', [HelpdeskController::class, 'index']);
+    Route::post('helpdesk/tickets', [HelpdeskController::class, 'store'])->middleware('throttle:20,1');
+    Route::get('helpdesk/tickets/{ticket}', [HelpdeskController::class, 'show']);
+    Route::post('helpdesk/tickets/{ticket}/messages', [HelpdeskController::class, 'reply'])->middleware('throttle:60,1');
+    Route::put('helpdesk/tickets/{ticket}', [HelpdeskController::class, 'update'])->middleware('permission:helpdesk.manage');
+    Route::post('helpdesk/tickets/{ticket}/rate', [HelpdeskController::class, 'rate']);
+
+    Route::get('announcements', [AnnouncementController::class, 'feed']);
+    Route::post('announcements/{announcement}/read', [AnnouncementController::class, 'read'])->whereNumber('announcement');
+    Route::post('announcements/{announcement}/acknowledge', [AnnouncementController::class, 'acknowledge'])->whereNumber('announcement');
+    Route::middleware('permission:announcements.manage')->group(function () {
+        Route::get('announcements/manage', [AnnouncementController::class, 'index']);
+        Route::post('announcements', [AnnouncementController::class, 'store']);
+        Route::put('announcements/{announcement}', [AnnouncementController::class, 'update']);
+        Route::delete('announcements/{announcement}', [AnnouncementController::class, 'destroy']);
+        Route::get('announcements/{announcement}/readers', [AnnouncementController::class, 'readers']);
     });
 
     // ── Notifications ─────────────────────────────────────────────────────
@@ -412,6 +468,31 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
         });
 
         // Payslips: own payslips for everyone; others need payroll.view (enforced in controller).
+        // Loans & salary advances: own for everyone (controller narrows), manage with payroll.manage.
+        Route::get('loans', [LoanController::class, 'index']);
+        Route::get('loans/{loan}', [LoanController::class, 'show'])->whereNumber('loan');
+        Route::middleware('permission:payroll.manage')->group(function () {
+            Route::post('loans/quote', [LoanController::class, 'quote']);
+            Route::post('loans', [LoanController::class, 'store']);
+            Route::put('loans/{loan}', [LoanController::class, 'update']);
+            Route::post('loans/{loan}/repay', [LoanController::class, 'repay']);
+
+            Route::get('payroll/bonus', [BonusArrearsController::class, 'bonus']);
+            Route::post('payroll/bonus/apply', [BonusArrearsController::class, 'applyBonus']);
+            Route::get('payroll/arrears', [BonusArrearsController::class, 'arrears']);
+            Route::post('payroll/arrears/apply', [BonusArrearsController::class, 'applyArrears']);
+
+            Route::get('tax-declarations', [TaxDeclarationController::class, 'index']);
+            Route::post('tax-declarations/{declaration}/review', [TaxDeclarationController::class, 'review']);
+            Route::post('tax-declarations/{declaration}/reopen', [TaxDeclarationController::class, 'reopen']);
+        });
+
+        // Income-tax declaration: the employee's own.
+        Route::get('me/tax-declaration', [TaxDeclarationController::class, 'mine']);
+        Route::post('me/tax-declaration/preview', [TaxDeclarationController::class, 'preview']);
+        Route::put('me/tax-declaration', [TaxDeclarationController::class, 'save']);
+        Route::get('me/form16', [ComplianceController::class, 'myForm16']);
+
         Route::get('payslips', [PayslipController::class, 'index']);
         Route::get('payslips/{payslip}', [PayslipController::class, 'show']);
         Route::get('payslips/{payslip}/pdf', [PayslipController::class, 'pdf']);

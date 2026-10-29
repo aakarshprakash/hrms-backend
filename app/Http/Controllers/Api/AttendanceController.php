@@ -8,6 +8,7 @@ use App\Models\Employee;
 use App\Models\Holiday;
 use App\Models\Leave;
 use App\Services\Attendance\AttendanceProcessor;
+use App\Services\Attendance\GeoFence;
 use App\Services\Attendance\PunchRecorder;
 use App\Services\AttendanceStatusResolver;
 use Carbon\Carbon;
@@ -82,12 +83,17 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Attendance for this day is locked by payroll.'], 422);
         }
 
+        [$geoError, $geo] = $this->geoCheck($employee, $validated);
+        if ($geoError) {
+            return response()->json(['message' => $geoError, 'code' => 'OUTSIDE_GEOFENCE'], 422);
+        }
+
         $recorder->recordForEmployee($employee, $validated['source'] ?? 'web', $now, [
             'direction' => 'in',
             'latitude' => $validated['latitude'] ?? null,
             'longitude' => $validated['longitude'] ?? null,
             'ip_address' => $request->ip(),
-            'payload' => $offline,
+            'payload' => ($offline || $geo) ? array_merge($offline ?? [], $geo) : null,
         ]);
         $processor->processEmployee($employee, $date, $date);
 
@@ -143,12 +149,17 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'You checked in less than 2 minutes ago. Wait a moment before checking out.'], 422);
         }
 
+        [$geoError, $geo] = $this->geoCheck($employee, $validated);
+        if ($geoError) {
+            return response()->json(['message' => $geoError, 'code' => 'OUTSIDE_GEOFENCE'], 422);
+        }
+
         $recorder->recordForEmployee($employee, $validated['source'] ?? 'web', $now, [
             'direction' => 'out',
             'latitude' => $validated['latitude'] ?? null,
             'longitude' => $validated['longitude'] ?? null,
             'ip_address' => $request->ip(),
-            'payload' => $offline,
+            'payload' => ($offline || $geo) ? array_merge($offline ?? [], $geo) : null,
         ]);
         $processor->processEmployee($employee, $date, $date);
 
@@ -156,6 +167,23 @@ class AttendanceController extends Controller
             'data' => $attendance->fresh(),
             'message' => 'Checked out successfully.',
         ]);
+    }
+
+    /**
+     * The branch geo-fence for a web / mobile punch (kiosks and devices are
+     * on the premises by definition): [refusal message or null, punch payload].
+     */
+    private function geoCheck(Employee $employee, array $validated): array
+    {
+        if (($validated['source'] ?? 'web') === 'kiosk' || ! $employee->branch) {
+            return [null, []];
+        }
+
+        return app(GeoFence::class)->checkPunch(
+            $employee,
+            isset($validated['latitude']) ? (float) $validated['latitude'] : null,
+            isset($validated['longitude']) ? (float) $validated['longitude'] : null,
+        );
     }
 
     public function index(Request $request): JsonResponse

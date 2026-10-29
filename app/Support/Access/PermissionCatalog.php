@@ -41,6 +41,10 @@ final class PermissionCatalog
         'Certificates' => [
             'certificates.manage' => 'Manage certificate templates and requests',
         ],
+        'Employee care' => [
+            'helpdesk.manage' => 'Handle helpdesk tickets and grievances',
+            'announcements.manage' => 'Publish announcements and see who has read them',
+        ],
         'Administration' => [
             'users.manage' => 'Manage user accounts',
             'roles.manage' => 'Create and edit roles and permissions',
@@ -59,12 +63,14 @@ final class PermissionCatalog
             'leaves.view', 'leaves.approve', 'leaves.manage',
             'payroll.view', 'payroll.manage', 'payroll.finalize', 'reports.view',
             'certificates.manage', 'users.manage', 'settings.manage', 'notifications.manage', 'insights.view',
+            'helpdesk.manage', 'announcements.manage',
         ],
         Roles::HR => [
             'employees.view', 'employees.manage', 'employees.sensitive', 'departments.manage',
             'attendance.view', 'attendance.manage', 'shifts.manage',
             'leaves.view', 'leaves.approve', 'leaves.manage',
             'payroll.view', 'payroll.manage', 'reports.view', 'certificates.manage', 'insights.view',
+            'helpdesk.manage', 'announcements.manage',
         ],
         Roles::MANAGER => [
             'employees.view', 'attendance.view', 'attendance.manage', 'leaves.view', 'leaves.approve', 'insights.view',

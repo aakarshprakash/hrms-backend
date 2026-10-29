@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\Compliance\Form16Service;
 use App\Services\Compliance\StatutoryReports;
 use App\Support\Csv;
 use Carbon\CarbonImmutable;
@@ -47,17 +48,21 @@ class ComplianceController extends Controller
         return response()->json(['data' => $data]);
     }
 
-    public function download(Request $request, string $report): StreamedResponse
+    public function download(Request $request, string $report)
     {
         abort_unless(array_key_exists($report, StatutoryReports::REPORTS), 404);
         [$year, $month, $branches] = $this->period($request);
         $payslips = $this->payslipsFor($request, $report, $year, $month, $branches);
         abort_if($payslips->isEmpty(), 422, 'There is no finalized payroll for this period yet.');
+        $pdf = $request->input('format') === 'pdf';
+        if ($pdf && $report === 'pf-ecr') {
+            $report = 'pf';
+        }
 
         $stamp = $request->filled('quarter') ? "{$year}-Q{$request->integer('quarter')}" : sprintf('%04d%02d', $year, $month);
 
         activity('payroll')->causedBy($request->user())->event('compliance_export')
-            ->withProperties(['report' => $report, 'period' => $stamp, 'branches' => $branches])
+            ->withProperties(['report' => $report, 'period' => $stamp, 'branches' => $branches, 'format' => $pdf ? 'pdf' : 'file'])
             ->log(StatutoryReports::REPORTS[$report] . " exported ({$stamp})");
 
         if ($report === 'pf-ecr') {
@@ -98,6 +103,10 @@ class ComplianceController extends Controller
 
         $filename = str_replace(' ', '-', strtolower(StatutoryReports::REPORTS[$report])) . "-{$stamp}.csv";
 
+        if ($pdf) {
+            return $this->pdfStatement($request, $report, $header, collect($rows)->map(fn ($r) => array_values((array) $r))->all(), $year, $month, $branches, $stamp);
+        }
+
         return response()->streamDownload(function () use ($header, $rows) {
             $out = fopen('php://output', 'w');
             Csv::put($out, $header);
@@ -106,6 +115,108 @@ class ComplianceController extends Controller
             }
             fclose($out);
         }, $filename, ['Content-Type' => 'text/csv']);
+    }
+
+    /** A printable statement: challan totals and due date on top, the register below, a signature block. */
+    private function pdfStatement(Request $request, string $report, array $header, array $rows, int $year, int $month, ?array $branches, string $stamp)
+    {
+        $summary = $this->reports->summary($year, $month, $branches, $request->user());
+        $inr = fn ($v) => '₹' . number_format((float) $v, 2);
+        $due = fn ($d) => $d ? CarbonImmutable::parse($d)->format('d M Y') : '—';
+
+        [$numeric, $boxes] = match ($report) {
+            'pf' => [range(3, 10), [
+                'Members' => $summary['pf']['members'], 'EPF wages' => $inr($summary['pf']['epf_wages']),
+                'Employee share' => $inr($summary['pf']['employee_share']), 'Employer EPF + EPS' => $inr($summary['pf']['employer_epf'] + $summary['pf']['employer_eps']),
+                'EDLI + admin' => $inr($summary['pf']['edli_charges'] + $summary['pf']['admin_charges']), 'Challan total' => $inr($summary['pf']['total']),
+                'Due by' => $due($summary['pf']['due_date']),
+            ]],
+            'esi' => [[2, 3], [
+                'Members' => $summary['esi']['members'], 'Wages' => $inr($summary['esi']['wages']), 'Employee 0.75%' => $inr($summary['esi']['employee_share']),
+                'Employer 3.25%' => $inr($summary['esi']['employer_share']), 'Challan total' => $inr($summary['esi']['total']), 'Due by' => $due($summary['esi']['due_date']),
+            ]],
+            'pt' => [[4, 5], ['Employees' => $summary['pt']['employees'], 'Professional tax' => $inr($summary['pt']['total'])]],
+            'tds' => [[6, 7], ['Employees with TDS' => $summary['tds']['employees'], 'TDS for the month' => $inr($summary['tds']['total']),
+                'Deposit by' => $due($summary['tds']['due_date']), '24Q return due' => $due($summary['tds']['return_due'])]],
+            default => [range(5, count($header) - 1), ['Employees' => count($rows), 'Gross' => $inr($summary['payroll']['gross']), 'Net pay' => $inr($summary['payroll']['net']),
+                'Cost to company' => $inr($summary['payroll']['employer_cost'])]],
+        };
+        if ($request->filled('quarter') && $report === 'tds') {
+            $boxes = ['Employees' => collect($rows)->pluck(0)->unique()->count(), 'TDS in the quarter' => $inr(collect($rows)->sum(fn ($r) => (float) $r[7]))];
+        }
+
+        $period = $request->filled('quarter')
+            ? 'FY ' . $year . '-' . sprintf('%02d', ($year + 1) % 100) . ' · Q' . $request->integer('quarter')
+            : CarbonImmutable::create($year, $month, 1)->format('F Y');
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.compliance', [
+            'title' => StatutoryReports::REPORTS[$report], 'period' => $period, 'header' => $header, 'rows' => $rows,
+            'numeric' => $numeric, 'boxes' => $boxes, 'company' => app(\App\Support\Tenancy\TenantContext::class)->company(),
+            'generatedBy' => $request->user()->name,
+        ])->setPaper('a4', $report === 'salary-register' || $report === 'pf' ? 'landscape' : 'portrait');
+
+        $name = str_replace(' ', '-', strtolower(StatutoryReports::REPORTS[$report])) . "-{$stamp}.pdf";
+
+        return response($pdf->output(), 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => "attachment; filename=\"{$name}\""]);
+    }
+
+    /** Employees with salary in a financial year, for issuing Form 16. */
+    public function form16List(Request $request, Form16Service $form16): JsonResponse
+    {
+        $fy = $this->financialYear($request);
+        $company = app(\App\Support\Tenancy\TenantContext::class)->company();
+        $branchId = $this->requestedBranchId();
+        $employees = \App\Models\Employee::visibleTo($request->user())->when($branchId, fn ($q) => $q->where('branch_id', $branchId))->get()->keyBy('id');
+        $slips = $form16->payslips($employees->keys()->all(), $fy, (int) ($company?->fiscal_year_start_month ?: 4))->groupBy('employee_id');
+
+        $rows = $slips->map(fn ($s, $id) => [
+            'employee_id' => (int) $id,
+            'employee_code' => $employees[$id]->employee_code,
+            'name' => $employees[$id]->full_name,
+            'pan' => $employees[$id]->tax_id ? 'XXXXXX' . substr(strtoupper($employees[$id]->tax_id), -4) : null,
+            'months' => $s->count(),
+            'taxable' => round((float) $s->sum(fn ($p) => $p->taxable_gross ?: $p->gross_pay), 2),
+            'tds' => round((float) $s->sum('tds'), 2),
+        ])->sortBy('name')->values();
+
+        return response()->json(['data' => $rows, 'financial_year' => $fy, 'employer' => [
+            'pan' => $company?->statutory['pan'] ?? null, 'tan' => $company?->statutory['tan'] ?? null,
+        ]]);
+    }
+
+    public function form16(Request $request, Form16Service $form16)
+    {
+        $request->validate(['employee_id' => 'required|integer|exists:employees,id']);
+        $employee = $this->authorizeEmployeeVisible($request->integer('employee_id'));
+
+        return $this->form16Pdf($employee, $this->financialYear($request), $form16);
+    }
+
+    /** The signed-in employee's own statement. */
+    public function myForm16(Request $request, Form16Service $form16)
+    {
+        $employee = $this->actorEmployee();
+        abort_unless($employee, 422, 'No employee profile found for this user.');
+
+        return $this->form16Pdf($employee, $this->financialYear($request), $form16);
+    }
+
+    private function form16Pdf(\App\Models\Employee $employee, string $fy, Form16Service $form16)
+    {
+        $data = $form16->build($employee->loadMissing('designation:id,title'), $fy, app(\App\Support\Tenancy\TenantContext::class)->company());
+        abort_if($data['months']->isEmpty(), 422, "No finalized payroll for {$employee->full_name} in FY {$fy}.");
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.form16', ['f' => $data])->setPaper('a4');
+        $name = "Form16-PartB-{$employee->employee_code}-{$fy}.pdf";
+
+        return response($pdf->output(), 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => "attachment; filename=\"{$name}\""]);
+    }
+
+    private function financialYear(Request $request): string
+    {
+        $request->validate(['financial_year' => ['nullable', 'regex:/^\d{4}-\d{2}$/']]);
+
+        return $request->input('financial_year')
+            ?: app(\App\Services\Payroll\TaxDeclarationService::class)->financialYear(app(\App\Support\Tenancy\TenantContext::class)->company());
     }
 
     /** @return array{0: list<string>, 1: Collection} */

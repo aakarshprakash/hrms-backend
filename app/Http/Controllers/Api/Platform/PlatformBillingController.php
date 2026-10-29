@@ -86,7 +86,7 @@ class PlatformBillingController extends Controller
         $validated = $request->validate([
             'plan_code' => ['sometimes', Rule::exists('plans', 'code')],
             'status' => ['sometimes', Rule::in(['trialing', 'active', 'past_due', 'cancelled', 'expired'])],
-            'billing_cycle' => 'sometimes|in:monthly,yearly',
+            'billing_cycle' => ['sometimes', Rule::in(\App\Support\Billing\Cycles::keys())],
             'trial_ends_at' => 'nullable|date',
             'current_period_end' => 'nullable|date',
             'custom_monthly_price' => 'nullable|numeric|min:0',

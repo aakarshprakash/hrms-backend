@@ -67,6 +67,7 @@ class BillingFeatureResolver
             'plan_name' => $s->plan?->name,
             'status' => $s->status,
             'billing_cycle' => $s->billing_cycle,
+            'trial_started_at' => $s->created_at?->toIso8601String(),
             'trial_ends_at' => $s->trial_ends_at?->toIso8601String(),
             'trial_days_left' => $s->trialDaysLeft(),
             'plan_confirmed' => $s->plan_confirmed_at !== null,

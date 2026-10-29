@@ -13,6 +13,7 @@ final class Features
     public const ALL = [
         'core' => 'Employees, organisation, basic attendance and leave',
         'self_service' => 'Employee self-service portal',
+        'geofence' => 'Geo-fenced web and mobile attendance',
         'biometric' => 'Biometric device integration',
         'shifts' => 'Shift rosters, rotations and swaps',
         'payroll' => 'Payroll engine and payslips',

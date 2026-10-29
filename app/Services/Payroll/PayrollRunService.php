@@ -94,6 +94,9 @@ class PayrollRunService
 
                 // A re-run after someone left the period removes their stale payslip.
                 Payslip::where('payroll_run_id', $run->id)->whereNotIn('employee_id', $employees->pluck('id'))->delete();
+
+                // The loan ledger mirrors what these payslips deducted.
+                app(LoanService::class)->syncRun($run, $rows);
             });
 
             foreach ($stalePdfs as $path) {
