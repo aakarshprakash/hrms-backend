@@ -100,6 +100,8 @@ class StoreEmployeeRequest extends FormRequest
             // Attendance & statutory
             'weekly_off_days' => ['nullable', 'array'],
             'weekly_off_days.*' => ['integer', 'between:0,6'],
+            // Geo-fencing: branch sites (on), anywhere (off: sales / travelling staff), or assigned sites.
+            'geofence_mode' => ['sometimes', Rule::in(['branch', 'anywhere', 'sites'])],
             'uan' => ['nullable', 'digits:12'],
             'pf_number' => ['nullable', 'string', 'max:30'],
             'esi_number' => ['nullable', 'string', 'max:20'],

@@ -148,4 +148,40 @@ class ComplianceTest extends TestCase
         $employee = $this->makeUser('employee', $this->branch)['user'];
         $this->actingAs($employee, 'sanctum')->getJson('/api/compliance/summary?' . $this->query())->assertForbidden();
     }
+
+    public function test_every_register_prints_as_a_pdf_statement(): void
+    {
+        $this->finalizedJune();
+
+        foreach (['pf', 'pf-ecr', 'esi', 'pt', 'tds', 'salary-register'] as $report) {
+            $pdf = $this->actingAs($this->hr, 'sanctum')->get("/api/compliance/{$report}/download?" . $this->query(['format' => 'pdf']));
+            $pdf->assertOk();
+            $this->assertSame('application/pdf', $pdf->headers->get('Content-Type'), $report);
+            $this->assertStringStartsWith('%PDF', $pdf->getContent(), $report);
+        }
+    }
+
+    public function test_form16_part_b_for_hr_and_for_the_employee_themself(): void
+    {
+        $this->finalizedJune();
+        $ravi = \App\Models\Employee::where('uan', '100900000001')->firstOrFail();
+        $raviUser = User::findOrFail($ravi->user_id);
+
+        $list = $this->actingAs($this->hr, 'sanctum')->getJson('/api/compliance/form16?financial_year=2026-27')->assertOk();
+        $this->assertCount(2, $list->json('data'));
+        $this->assertSame('XXXXXX234F', collect($list->json('data'))->firstWhere('employee_id', $ravi->id)['pan']);
+
+        $pdf = $this->actingAs($this->hr, 'sanctum')->get("/api/compliance/form16/pdf?financial_year=2026-27&employee_id={$ravi->id}")->assertOk();
+        $this->assertStringStartsWith('%PDF', $pdf->getContent());
+
+        $data = app(\App\Services\Compliance\Form16Service::class)->build($ravi, '2026-27', $ravi->company);
+        $this->assertCount(1, $data['months']);
+        $this->assertEquals(15000, $data['computation']['gross_salary']);
+        $this->assertEquals(15000, $data['computation']['standard_deduction']); // capped at salary
+        $this->assertEquals(0, $data['computation']['taxable_income']);
+
+        $this->actingAs($raviUser, 'sanctum')->get('/api/me/form16?financial_year=2026-27')->assertOk();
+        $this->actingAs($raviUser, 'sanctum')->get('/api/me/form16?financial_year=2025-26')->assertStatus(422); // no payroll that year
+        $this->actingAs($raviUser, 'sanctum')->get("/api/compliance/form16/pdf?financial_year=2026-27&employee_id={$ravi->id}")->assertForbidden();
+    }
 }

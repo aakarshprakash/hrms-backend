@@ -23,8 +23,26 @@ return [
     // Days after an invoice falls due before the subscription is past due.
     'grace_days' => (int) env('BILLING_GRACE_DAYS', 7),
 
-    // Yearly billing: 12 months for the price of this many.
+    /*
+    | Billing cycles: how many months a period covers and how many of them
+    | are charged (6 months for the price of 5.5 = 8% off; a year for 10 = 17% off).
+    */
+    'cycles' => [
+        'monthly' => ['label' => 'Monthly', 'months' => 1, 'months_charged' => 1],
+        'half_yearly' => ['label' => '6 months', 'months' => 6, 'months_charged' => 5.5],
+        'yearly' => ['label' => 'Yearly', 'months' => 12, 'months_charged' => 10],
+    ],
+
+    // Kept for older callers: yearly billing, 12 months for the price of this many.
     'yearly_months_charged' => 10,
+
+    // Signup email verification.
+    'otp' => [
+        'ttl_minutes' => 10,
+        'max_attempts' => 5,
+        'resend_seconds' => 60,
+        'token_ttl_minutes' => 60,
+    ],
 
     // Self-serve sign-up from the login page. Off unless enabled.
     'public_signup' => (bool) env('PUBLIC_SIGNUP', false),
@@ -42,7 +60,7 @@ return [
             'base_price' => 999,
             'per_employee_price' => 49,
             'included_employees' => 20,
-            'features' => ['core', 'self_service', 'biometric', 'shifts', 'certificates'],
+            'features' => ['core', 'self_service', 'geofence', 'biometric', 'shifts', 'certificates'],
             'limits' => ['branches' => 1, 'employees' => 50],
             'sort_order' => 1,
         ],
@@ -52,7 +70,7 @@ return [
             'base_price' => 1999,
             'per_employee_price' => 69,
             'included_employees' => 25,
-            'features' => ['core', 'self_service', 'biometric', 'shifts', 'certificates', 'payroll', 'statutory',
+            'features' => ['core', 'self_service', 'geofence', 'biometric', 'shifts', 'certificates', 'payroll', 'statutory',
                 'notifications', 'audit_log', 'multi_branch'],
             'limits' => ['branches' => 10, 'employees' => 500],
             'sort_order' => 2,
@@ -63,7 +81,7 @@ return [
             'base_price' => 4999,
             'per_employee_price' => 89,
             'included_employees' => 50,
-            'features' => ['core', 'self_service', 'biometric', 'shifts', 'certificates', 'payroll', 'statutory',
+            'features' => ['core', 'self_service', 'geofence', 'biometric', 'shifts', 'certificates', 'payroll', 'statutory',
                 'notifications', 'audit_log', 'multi_branch', 'insights'],
             'limits' => ['branches' => null, 'employees' => null],
             'sort_order' => 3,
@@ -75,7 +93,7 @@ return [
             'base_price' => 0,
             'per_employee_price' => 0,
             'included_employees' => 0,
-            'features' => ['core', 'self_service', 'biometric', 'shifts', 'certificates', 'payroll', 'statutory',
+            'features' => ['core', 'self_service', 'geofence', 'biometric', 'shifts', 'certificates', 'payroll', 'statutory',
                 'notifications', 'audit_log', 'multi_branch', 'insights'],
             'limits' => ['branches' => null, 'employees' => null],
             'is_public' => false,

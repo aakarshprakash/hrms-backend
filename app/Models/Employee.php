@@ -61,6 +61,7 @@ class Employee extends Model implements HasMedia
         'work_location',
         'notes',
         'weekly_off_days',
+        'geofence_mode',
         'uan',
         'pf_number',
         'esi_number',
@@ -164,6 +165,12 @@ class Employee extends Model implements HasMedia
     public function user()
     {
         return $this->belongsTo(User::class);
+    }
+
+    /** Sites this employee may punch from when geofence_mode is "sites". */
+    public function geoSites()
+    {
+        return $this->belongsToMany(GeoSite::class, 'employee_geo_site');
     }
 
     public function branch()

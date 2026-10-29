@@ -7,6 +7,7 @@ use App\Models\Employee;
 use App\Models\Invoice;
 use App\Models\Scopes\BranchScope;
 use App\Models\Subscription;
+use App\Support\Billing\Cycles;
 use App\Support\Tenancy\TenantContext;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\CarbonImmutable;
@@ -35,7 +36,8 @@ class InvoiceService
     {
         $plan = $subscription->plan;
         $employees = $this->activeEmployees($company->id);
-        $months = $subscription->billing_cycle === 'yearly' ? (int) config('billing.yearly_months_charged', 10) : 1;
+        $cycle = $subscription->billing_cycle ?: 'monthly';
+        $months = Cycles::monthsCharged($cycle);
         $period = $start->format('j M Y') . ' – ' . $end->format('j M Y');
         $lines = [];
 
@@ -47,13 +49,14 @@ class InvoiceService
                 'unit_price' => (float) $plan->base_price, 'amount' => round($months * (float) $plan->base_price, 2)];
             $extra = max(0, $employees - (int) $plan->included_employees);
             if ($extra > 0 && (float) $plan->per_employee_price > 0) {
-                $lines[] = ['description' => "Additional employees ({$extra} × {$months} month" . ($months > 1 ? 's' : '') . ')', 'quantity' => $extra * $months,
+                $lines[] = ['description' => "Additional employees ({$extra} × {$months} month" . ($months != 1 ? 's' : '') . ')', 'quantity' => $extra * $months,
                     'unit_price' => (float) $plan->per_employee_price, 'amount' => round($extra * $months * (float) $plan->per_employee_price, 2)];
             }
         }
 
-        if ($months > 1) {
-            $lines[] = ['description' => 'Yearly billing: 12 months for the price of ' . $months, 'quantity' => 1, 'unit_price' => 0, 'amount' => 0];
+        if (Cycles::months($cycle) > 1) {
+            $lines[] = ['description' => Cycles::label($cycle) . ' billing: ' . Cycles::months($cycle) . ' months for the price of ' . rtrim(rtrim(number_format($months, 1), '0'), '.') . ' (' . Cycles::discountPercent($cycle) . '% off)',
+                'quantity' => 1, 'unit_price' => 0, 'amount' => 0];
         }
 
         $subtotal = round(array_sum(array_column($lines, 'amount')), 2);

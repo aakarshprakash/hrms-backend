@@ -57,6 +57,54 @@ class RazorpayGateway
         return $response->json('short_url');
     }
 
+    /**
+     * A Checkout order for the invoice's total (paise). The SPA opens
+     * Razorpay Checkout with it; the payment comes back signed.
+     *
+     * @return array{id: string, amount: int, currency: string}
+     */
+    public function createOrder(Invoice $invoice): array
+    {
+        if (! $this->enabled()) {
+            throw new RuntimeException('Online payment is not set up.');
+        }
+
+        $response = Http::timeout(20)
+            ->withBasicAuth(config('billing.razorpay.key_id'), config('billing.razorpay.key_secret'))
+            ->post(self::API . '/orders', [
+                'amount' => (int) round((float) $invoice->total * 100),
+                'currency' => 'INR',
+                'receipt' => $invoice->number,
+                'notes' => ['invoice_number' => $invoice->number, 'company_id' => (string) $invoice->company_id],
+            ]);
+
+        if ($response->failed()) {
+            throw new RuntimeException('Razorpay: ' . ($response->json('error.description') ?? $response->body()));
+        }
+
+        return $response->json();
+    }
+
+    /** Checkout's handler signature: HMAC-SHA256 of "order_id|payment_id" with the key secret. */
+    public function validPaymentSignature(string $orderId, string $paymentId, string $signature): bool
+    {
+        $secret = (string) config('billing.razorpay.key_secret');
+
+        return $secret !== '' && hash_equals(hash_hmac('sha256', $orderId . '|' . $paymentId, $secret), $signature);
+    }
+
+    /** The payment's method (upi, card...), best effort. */
+    public function paymentMethod(string $paymentId): ?string
+    {
+        try {
+            return Http::timeout(10)
+                ->withBasicAuth(config('billing.razorpay.key_id'), config('billing.razorpay.key_secret'))
+                ->get(self::API . '/payments/' . $paymentId)->json('method');
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     public function validWebhook(string $payload, ?string $signature): bool
     {
         $secret = config('billing.razorpay.webhook_secret');

@@ -34,6 +34,7 @@ class PayrollEngine
         private readonly AttendanceSummarizer $attendance,
         private readonly StatutoryCalculator $statutory,
         private readonly OvertimeCalculationService $overtime,
+        private readonly LoanService $loans,
     ) {
     }
 
@@ -127,13 +128,18 @@ class PayrollEngine
             }
         }
 
-        // Structure deductions (loan EMI, advance recovery...).
+        // Structure deductions (fixed recoveries set on the salary).
         foreach ($lines->where('component.type', 'deduction') as $line) {
             $monthly = $this->monthlyAmount($line, $basicMonthly, $monthlyGrossBase);
             $amount = $line->component->prorate ? round($monthly * $proration, 2) : round($monthly, 2);
             if ($amount > 0) {
                 $deductions[] = ['code' => $line->component->code, 'name' => $line->component->name, 'amount' => $amount, 'kind' => 'structure'];
             }
+        }
+
+        // Loan EMIs and salary-advance recoveries due this month.
+        foreach ($this->loans->deductionsFor($employee, $run) as $line) {
+            $deductions[] = $line;
         }
 
         $gross = round(array_sum(array_column($earnings, 'earned')), 2);

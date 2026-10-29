@@ -7,6 +7,7 @@ use App\Models\Company;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Subscription;
+use App\Support\Billing\Cycles;
 use App\Support\Tenancy\TenantContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
@@ -38,15 +39,20 @@ class SubscriptionService
         );
     }
 
-    public function startTrial(Company $company, ?string $planCode = null): Subscription
+    /**
+     * A trial on the given plan. When the plan was chosen at sign-up
+     * ($confirmed), billing on $cycle starts by itself when the trial ends.
+     */
+    public function startTrial(Company $company, ?string $planCode = null, string $cycle = 'monthly', bool $confirmed = false): Subscription
     {
         $plan = Plan::where('code', $planCode ?: config('billing.trial_plan', 'growth'))->firstOrFail();
 
         return $this->create($company, [
             'plan_id' => $plan->id,
             'status' => 'trialing',
-            'billing_cycle' => 'monthly',
+            'billing_cycle' => in_array($cycle, Cycles::keys(), true) ? $cycle : 'monthly',
             'trial_ends_at' => now()->addDays((int) config('billing.trial_days', 14)),
+            'plan_confirmed_at' => $confirmed ? now() : null,
         ]);
     }
 
@@ -79,17 +85,23 @@ class SubscriptionService
 
     /**
      * The tenant chooses (or changes) its plan. Refused when current usage
-     * is over the new plan's limits.
+     * is over the new plan's limits. $startNow ends a running trial early:
+     * the paid period starts today and its first invoice is issued.
      */
-    public function choosePlan(Company $company, Plan $plan, string $cycle): Subscription
+    public function choosePlan(Company $company, Plan $plan, string $cycle, bool $startNow = false): Subscription
     {
         abort_unless($plan->is_active && $plan->is_public, 422, 'That plan isn’t available.');
         $this->assertFits($company, $plan);
 
         $current = $this->current($company);
+        $inTrial = $current && $current->status === 'trialing' && $current->trial_ends_at?->isFuture();
+
+        if ($inTrial && $startNow) {
+            $current->update(['status' => 'expired', 'trial_ends_at' => now(), 'notes' => 'Trial ended early: paid plan started.']);
+        }
 
         // Still in the trial: keep it, billing starts when it ends.
-        if ($current && $current->status === 'trialing' && $current->trial_ends_at?->isFuture()) {
+        if ($inTrial && ! $startNow) {
             $current->update(['plan_id' => $plan->id, 'billing_cycle' => $cycle, 'plan_confirmed_at' => now(),
                 'cancel_at_period_end' => false]);
             $this->resolver->forget($company->id);
@@ -205,7 +217,7 @@ class SubscriptionService
 
     public function periodEnd(CarbonImmutable $start, string $cycle): CarbonImmutable
     {
-        return ($cycle === 'yearly' ? $start->addYear() : $start->addMonth())->subDay();
+        return $start->addMonthsNoOverflow(Cycles::months($cycle))->subDay();
     }
 
     /** Usage must fit the plan's quotas before switching to it. */

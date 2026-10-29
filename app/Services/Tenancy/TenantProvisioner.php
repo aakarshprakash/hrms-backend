@@ -29,6 +29,7 @@ class TenantProvisioner
      *   company_name: string, industry?: string, legal_name?: string, email?: string, phone?: string,
      *   state?: string, city?: string, timezone?: string, currency_code?: string,
      *   branch_name?: string, apply_template?: bool, is_demo?: bool, plan_code?: string,
+     *   billing_cycle?: string, plan_confirmed?: bool, address_line1?: string, postal_code?: string,
      *   admin_name: string, admin_email: string, admin_password: string, admin_phone?: string,
      * }  $data
      * @return array{company: Company, branch: Branch, admin: User}
@@ -44,6 +45,8 @@ class TenantProvisioner
                     'industry' => $data['industry'] ?? 'general',
                     'email' => $data['email'] ?? $data['admin_email'],
                     'phone' => $data['phone'] ?? null,
+                    'address_line1' => $data['address_line1'] ?? null,
+                    'postal_code' => $data['postal_code'] ?? null,
                     'city' => $data['city'] ?? null,
                     'state' => $data['state'] ?? null,
                     'timezone' => $data['timezone'] ?? 'Asia/Kolkata',
@@ -89,7 +92,7 @@ class TenantProvisioner
                 if (! empty($data['is_demo'])) {
                     $billing->startDemo($company);
                 } elseif (\App\Models\Plan::where('code', $data['plan_code'] ?? config('billing.trial_plan'))->exists()) {
-                    $billing->startTrial($company, $data['plan_code'] ?? null);
+                    $billing->startTrial($company, $data['plan_code'] ?? null, $data['billing_cycle'] ?? 'monthly', (bool) ($data['plan_confirmed'] ?? false));
                 }
 
                 return ['company' => $company->fresh(), 'branch' => $branch, 'admin' => $admin];
