@@ -142,6 +142,7 @@ class PlatformCompanyController extends Controller
                 'branches' => $model->branches()->withCount('employees')->get(['id', 'name', 'city']),
                 'admins' => $admins,
                 'last_activity_at' => DB::table('users')->where('company_id', $model->id)->max('last_login_at'),
+                'mobile_app' => PlatformMobileController::companyState($model),
             ])]);
         });
     }

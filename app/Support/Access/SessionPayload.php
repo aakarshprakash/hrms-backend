@@ -5,6 +5,7 @@ namespace App\Support\Access;
 use App\Models\Branch;
 use App\Models\User;
 use App\Support\Billing\Features;
+use App\Support\Mobile\MobileAccess;
 use App\Support\Tenancy\TenantContext;
 
 /**
@@ -18,7 +19,7 @@ class SessionPayload
     public static function for(User $user): array
     {
         $context = app(TenantContext::class);
-        $user->loadMissing(['employee', 'branch', 'roles']);
+        $user->loadMissing(['employee.department:id,name', 'employee.designation:id,title', 'employee.branch:id,name', 'branch', 'roles']);
 
         $permissions = ($user->isTenantAdmin() || $user->isPlatformAdmin())
             ? PermissionCatalog::all()
@@ -55,6 +56,7 @@ class SessionPayload
             ] : null,
             'branches' => $branches,
             'features' => $company ? Features::enabledFor($company) : [],
+            'mobile_app' => $company ? MobileAccess::allowsCompany($company) : false,
             'subscription' => $company ? Features::subscriptionSummary($company) : null,
             'support_mode' => $user->isPlatformAdmin() && $company !== null,
         ];

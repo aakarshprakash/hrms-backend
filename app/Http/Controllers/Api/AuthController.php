@@ -10,6 +10,7 @@ use App\Models\Employee;
 use App\Models\User;
 use App\Support\Access\Roles;
 use App\Support\Access\SessionPayload;
+use App\Support\Mobile\MobileAccess;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -54,6 +55,12 @@ class AuthController extends Controller
 
         $this->context->set($user->company_id);
         $this->context->enforce();
+
+        // The mobile app may be switched off platform-wide, for the plan or the organisation.
+        if (MobileAccess::isMobile($request) && ! $user->isPlatformAdmin()
+            && ($refusal = MobileAccess::refusal($request, $this->context->company()))) {
+            return response()->json(['message' => $refusal[1], 'code' => $refusal[0]], 403);
+        }
 
         $user->forceFill(['last_login_at' => now(), 'last_login_ip' => $request->ip()])->saveQuietly();
 

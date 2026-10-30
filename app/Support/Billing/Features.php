@@ -14,6 +14,7 @@ final class Features
         'core' => 'Employees, organisation, basic attendance and leave',
         'self_service' => 'Employee self-service portal',
         'geofence' => 'Geo-fenced web and mobile attendance',
+        'mobile_app' => 'PeopleNex mobile app (Android)',
         'biometric' => 'Biometric device integration',
         'shifts' => 'Shift rosters, rotations and swaps',
         'payroll' => 'Payroll engine and payslips',
