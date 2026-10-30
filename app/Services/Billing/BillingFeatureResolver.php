@@ -80,4 +80,10 @@ class BillingFeatureResolver
     {
         unset($this->subscriptions[$companyId]);
     }
+
+    /** After a plan's modules change, every cached subscription is stale. */
+    public function forgetAll(): void
+    {
+        $this->subscriptions = [];
+    }
 }

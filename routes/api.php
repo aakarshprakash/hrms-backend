@@ -32,6 +32,8 @@ use App\Http\Controllers\Api\HolidayController;
 use App\Http\Controllers\Api\Platform\PlatformBillingController;
 use App\Http\Controllers\Api\Platform\PlatformLicenseController;
 use App\Http\Controllers\Api\Platform\PlatformMailController;
+use App\Http\Controllers\Api\Platform\PlatformMobileController;
+use App\Support\Mobile\MobileAccess;
 use App\Http\Controllers\Api\PublicSignupController;
 use App\Http\Controllers\Api\MyProfileController;
 use App\Http\Controllers\Api\NotificationController;
@@ -94,6 +96,7 @@ Route::middleware('throttle:login')->group(function () {
 
 // Public: what the login page may offer, self-serve sign-up, payment webhook.
 Route::get('/public/config', [PublicSignupController::class, 'config'])->middleware('throttle:60,1');
+Route::get('/public/mobile-config', fn () => response()->json(['data' => MobileAccess::publicConfig()]))->middleware('throttle:60,1');
 Route::post('/auth/signup', [PublicSignupController::class, 'signup'])->middleware('throttle:signup');
 Route::post('/auth/signup/send-code', [PublicSignupController::class, 'sendCode'])->middleware('throttle:signup-otp');
 Route::post('/auth/signup/verify-code', [PublicSignupController::class, 'verifyCode'])->middleware('throttle:signup-otp');
@@ -103,7 +106,7 @@ Route::post('/billing/razorpay/webhook', [PublicSignupController::class, 'razorp
 Route::get('/verify/{certificateNumber}', [PublicCertificateController::class, 'verify'])
     ->middleware('throttle:60,1');
 
-Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function () {
+Route::middleware(['auth:sanctum', 'tenant', 'mobile', 'throttle:api'])->group(function () {
 
     // ── Session ───────────────────────────────────────────────────────────
     Route::get('/user', fn (Request $request) => $request->user());
@@ -137,6 +140,9 @@ Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])->group(function ()
         Route::post('/licenses', [PlatformLicenseController::class, 'store']);
         Route::post('/licenses/{license}/revoke', [PlatformLicenseController::class, 'revoke']);
         Route::get('/billing/settings', [PlatformLicenseController::class, 'settings']);
+        Route::get('/mobile-settings', [PlatformMobileController::class, 'show']);
+        Route::put('/mobile-settings', [PlatformMobileController::class, 'update']);
+        Route::put('/companies/{company}/mobile-app', [PlatformMobileController::class, 'setCompany']);
         Route::get('/mail-settings', [PlatformMailController::class, 'show']);
         Route::put('/mail-settings', [PlatformMailController::class, 'update']);
         Route::post('/mail-settings/test', [PlatformMailController::class, 'test'])->middleware('throttle:10,1');
