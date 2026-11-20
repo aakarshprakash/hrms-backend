@@ -9,6 +9,7 @@ use App\Mail\EmployeeWelcomeMail;
 use App\Models\Employee;
 use App\Models\User;
 use App\Services\Employees\EmployeeCodes;
+use App\Services\Users\PasswordResetter;
 use App\Support\Access\RoleGrants;
 use App\Support\Access\Roles;
 use App\Support\Billing\Limits;
@@ -212,6 +213,20 @@ class EmployeeController extends Controller
             'manual' => (string) $request->input('password'),
             default => Str::password(10, letters: true, numbers: true, symbols: false, spaces: false),
         };
+    }
+
+    /** Quick reset from an employee's profile; creates their login first when they don't have one. */
+    public function resetPassword(Request $request, Employee $employee, PasswordResetter $resetter): JsonResponse
+    {
+        $this->authorize('view', $employee);
+        $v = $request->validate(PasswordResetter::rules());
+
+        $credentials = $resetter->resetForEmployee($request->user(), $employee->load('user'), $v['mode'] ?? 'auto', $v['password'] ?? null, $v['send_email'] ?? true);
+
+        return response()->json([
+            'credentials' => $credentials,
+            'message' => $credentials['created'] ? 'Login created.' : 'Password reset.',
+        ]);
     }
 
     public function show(Employee $employee): JsonResponse

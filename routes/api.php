@@ -216,6 +216,7 @@ Route::middleware(['auth:sanctum', 'tenant', 'mobile', 'throttle:api'])->group(f
         Route::post('/users', [UserController::class, 'store']);
         Route::put('/users/{user}', [UserController::class, 'update']);
         Route::delete('/users/{user}', [UserController::class, 'destroy']);
+        Route::post('/users/{user}/reset-password', [UserController::class, 'resetPassword'])->middleware('throttle:30,1');
     });
     Route::middleware('permission:roles.manage')->group(function () {
         Route::get('/roles/manage', [RoleController::class, 'index']);
@@ -245,6 +246,8 @@ Route::middleware(['auth:sanctum', 'tenant', 'mobile', 'throttle:api'])->group(f
     Route::get('/employees/code-settings', [EmployeeController::class, 'codeSettings']);
     Route::get('/employees/{employee}', [EmployeeController::class, 'show']);
     Route::post('/employees/{employee}/avatar', [EmployeeController::class, 'uploadAvatar']);
+    Route::post('/employees/{employee}/reset-password', [EmployeeController::class, 'resetPassword'])
+        ->middleware(['permission:users.manage', 'throttle:30,1']);
     Route::get('/employees/{employee}/documents', [DocumentController::class, 'index']);
     Route::post('/employees/{employee}/documents', [DocumentController::class, 'upload']);
     Route::get('/employees/{employee}/documents/{media}/download', [DocumentController::class, 'download']);

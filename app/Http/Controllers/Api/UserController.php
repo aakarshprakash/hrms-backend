@@ -7,6 +7,7 @@ use App\Models\Employee;
 use App\Models\Role;
 use App\Models\Scopes\BranchScope;
 use App\Models\User;
+use App\Services\Users\PasswordResetter;
 use App\Support\Access\RoleGrants;
 use App\Support\Access\Roles;
 use App\Support\Tenancy\TenantContext;
@@ -226,6 +227,19 @@ class UserController extends Controller
             'data' => $this->present($user->fresh(['roles', 'branch:id,name', 'extraBranches:id,name', 'employee:id,employee_code,first_name,last_name'])),
             'message' => 'User updated successfully.',
         ]);
+    }
+
+    /**
+     * Quick reset: a generated (or typed) temporary password, forced change at next sign-in, every session
+     * ended. The generated password comes back once so the admin can hand it over if the email doesn't arrive.
+     */
+    public function resetPassword(Request $request, User $user, PasswordResetter $resetter): JsonResponse
+    {
+        $v = $request->validate(PasswordResetter::rules());
+
+        $credentials = $resetter->reset($request->user(), $user, $v['mode'] ?? 'auto', $v['password'] ?? null, $v['send_email'] ?? true);
+
+        return response()->json(['credentials' => $credentials, 'message' => 'Password reset.']);
     }
 
     public function destroy(Request $request, User $user): JsonResponse
